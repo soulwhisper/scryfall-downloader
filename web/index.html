@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Scryfall Downloader</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#workspace">Skip to content</a>
+  <header class="masthead">
+    <div class="frame brand-row">
+      <div class="brand"><span class="mark" aria-hidden="true"></span><div><span class="eyebrow">Forge image library</span><h1>Scryfall Downloader</h1></div></div>
+      <div class="connection"><span id="connection" class="badge" data-state="pending">Connecting</span><button type="button" class="quiet" id="sign-out" hidden>Lock console</button></div>
+    </div>
+    <nav id="navigation" class="frame navigation" aria-label="Console sections" hidden>
+      <a href="#sync" data-view="sync">Sync list</a>
+      <a href="#library" data-view="library">Library operations</a>
+      <a href="#jobs" data-view="jobs">Jobs</a>
+      <a href="#health" data-view="health">Diagnostics</a>
+    </nav>
+  </header>
+
+  <div class="frame">
+    <noscript><p class="notice">Enable JavaScript to operate the console. The downloader API remains available.</p></noscript>
+    <p class="notice" id="notice" role="status" aria-live="polite" hidden></p>
+    <button type="button" id="reconnect" hidden>Reconnect</button>
+    <section id="access" class="panel access" aria-labelledby="access-title" hidden>
+      <p class="eyebrow">Operations access</p>
+      <h2 id="access-title">Unlock the console</h2>
+      <p class="muted">Use the API token configured on the downloader. It is kept in this tab's memory only.</p>
+      <form id="access-form" autocomplete="off">
+        <label for="api-token">API token</label>
+        <input id="api-token" type="password" required spellcheck="false" autocomplete="off">
+        <div class="actions"><button class="primary" type="submit">Unlock console</button></div>
+      </form>
+    </section>
+
+    <main id="workspace" tabindex="-1" hidden>
+      <section id="view-sync" class="view" aria-labelledby="sync-title">
+        <div class="view-heading"><div><p class="eyebrow">01 / Automation</p><h2 id="sync-title">Sync list</h2><p class="muted">Save the series to keep current, then run on demand or on the downloader's own schedule.</p></div></div>
+        <form id="sync-form" class="split">
+          <div class="panel picker" id="sync-picker"></div>
+          <div class="panel form-panel">
+            <h3>Sync policy</h3>
+            <div id="sync-policy"></div>
+            <label class="check"><input id="sync-tokens" type="checkbox"> Include token sets linked in Scryfall</label>
+            <div class="fields">
+              <label for="sync-recent">Recent releases (days)<input id="sync-recent" type="number" min="1" max="90" placeholder="Off"><small>Paper core and expansion sets only.</small></label>
+              <label for="sync-interval">Repeat every (hours)<input id="sync-interval" type="number" min="1" max="720" placeholder="Manual"><small>Blank disables automatic runs.</small></label>
+            </div>
+            <div class="actions">
+              <button type="submit" class="primary" id="save-sync">Save sync list</button>
+              <button type="button" id="run-sync">Run saved list</button>
+            </div>
+            <p class="caption" id="sync-draft" aria-live="polite"></p>
+          </div>
+        </form>
+        <section class="panel run-status" aria-labelledby="run-title">
+          <h3 id="run-title">Schedule and last run</h3>
+          <dl class="stats" id="sync-status"></dl>
+          <p id="sync-error" class="callout" hidden></p>
+          <p class="caption">The server runs the schedule with this tab closed. Paused jobs are never resumed by the schedule.</p>
+        </section>
+      </section>
+
+      <section id="view-library" class="view" aria-labelledby="library-title" hidden>
+        <div class="view-heading"><div><p class="eyebrow">02 / Collection</p><h2 id="library-title">Library operations</h2><p class="muted">Run a one-off job. These set selections do not change the saved sync list.</p></div></div>
+        <form id="library-form" class="split">
+          <div class="panel picker" id="library-picker"></div>
+          <div class="panel form-panel">
+            <h3>Choose an operation</h3>
+            <div id="library-policy"></div>
+            <div class="op-list">
+              <div><button class="primary" type="submit" name="operation" value="download">Download / repair</button><p>Download missing or damaged images; use a quality floor to upgrade valid files.</p></div>
+              <div><button type="submit" name="operation" value="scan">Scan library</button><p>Report missing, corrupt, or low-quality images. No image writes.</p></div>
+              <div><button type="submit" name="operation" value="tidy">Preview renames</button><p>Check confirmed legacy <code>.fullborder</code> files. Review the complete plan before anything is renamed.</p></div>
+            </div>
+          </div>
+        </form>
+      </section>
+
+      <section id="view-jobs" class="view" aria-labelledby="jobs-title" hidden>
+        <div class="view-heading"><div><p class="eyebrow">03 / Activity</p><h2 id="jobs-title">Jobs</h2><p class="muted">Track queued, active, and completed work. Select a receipt for set-level results.</p></div><button id="refresh-jobs" type="button">Refresh jobs</button></div>
+        <div class="job-layout">
+          <aside class="panel job-history" aria-labelledby="history-title">
+            <h3 id="history-title">Recent jobs</h3>
+            <ul id="job-list" class="job-list"></ul>
+          </aside>
+          <div id="job-detail" class="panel job-detail" aria-labelledby="job-title">
+            <div class="job-head"><div id="job-meta"><h3 id="job-title">Select a job</h3><p class="muted">Set progress and warnings appear here.</p></div><div class="actions job-actions" id="job-actions"></div></div>
+            <div id="job-sets" class="job-sets"></div>
+            <section id="rename-section" class="rename-section" aria-labelledby="rename-title" hidden>
+              <h4 id="rename-title">Approved rename preview</h4>
+              <p id="rename-summary" class="muted"></p>
+              <button id="review-renames" type="button">Load full rename plan</button>
+              <div id="rename-table" class="table-overflow" tabindex="0" role="region" aria-label="Rename plan" hidden>
+                <table><thead><tr><th scope="col">Set</th><th scope="col">Current path</th><th scope="col">New path</th></tr></thead><tbody id="rename-rows"></tbody></table>
+              </div>
+              <div id="rename-confirmation" hidden>
+                <label class="check"><input id="rename-reviewed" type="checkbox"> I reviewed the entire rename plan.</label>
+                <button id="apply-renames" type="button" class="danger" disabled>Apply approved renames</button>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-health" class="view" aria-labelledby="health-title" hidden>
+        <div class="view-heading"><div><p class="eyebrow">04 / Service</p><h2 id="health-title">Diagnostics</h2><p class="muted">Check the server and the actual paths used for image downloads.</p></div><button id="probe" type="button">Check Scryfall &amp; CDN</button></div>
+        <div class="health-grid">
+          <section class="panel"><h3>Runtime</h3><dl id="runtime-status" class="stats"></dl></section>
+          <section class="panel"><h3>Upstream</h3><dl id="upstream-status" class="stats"></dl><p id="probe-date" class="caption"></p></section>
+        </div>
+        <section class="panel"><h3>Storage permissions</h3><ul class="paths" id="path-status"></ul><p class="caption">UID/GID, proxy, WebP and ownership repair stay on the host. These are permission checks, not a write test.</p></section>
+      </section>
+    </main>
+    <footer>Forge image maintenance <span aria-hidden="true">/</span> Scryfall metadata and artwork</footer>
+  </div>
+</body>
+</html>

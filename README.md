@@ -8,7 +8,38 @@ Download images for selected Magic: The Gathering sets through a local REST API.
 python3 downloader.py
 ```
 
-The server listens on `127.0.0.1:8765`. `--data DIR` selects the output and cache directory (default: `data/` next to the program). `--forge-editions /path/to/Forge/res/editions` uses the edition files from your Forge release instead of looking them up on GitHub. Keep one downloader per data directory. Keep the API on a trusted network; set `SCRYFALL_API_TOKEN` to require an `Authorization: Bearer …` header for catalogue and job operations. Use TLS at a reverse proxy if requests cross an untrusted link.
+The server listens on `127.0.0.1:8765`. Open `http://127.0.0.1:8765/` for the
+Web UI. `--data DIR` selects the output and cache directory (default: `data/`
+next to the program). `--forge-editions /path/to/Forge/res/editions` uses the
+edition files from your Forge release instead of looking them up on GitHub.
+Keep one downloader per data directory.
+
+Keep the service on a trusted network. When publishing the port on a LAN, set
+`SCRYFALL_API_TOKEN` to protect management operations and use an HTTPS reverse
+proxy for the token in transit. The console keeps the token in tab memory only;
+API clients use `Authorization: Bearer …`. Serve the console at the proxy's
+origin root and preserve the `Host` header.
+
+## Web UI
+
+- **Sync list:** Search the Scryfall catalogue by name or code, save your sets,
+  and optionally include linked tokens and recent paper core/expansion sets.
+  Set the language order, quality floor, and refresh options. **Run saved list**
+  uses the saved policy; blank **Repeat every** is manual-only.
+- **Library operations:** Download, repair, upgrade, or scan chosen sets without
+  changing the sync list. Preview legacy renames, then review and confirm the
+  entire plan in its job receipt.
+- **Jobs:** Follow per-set progress and findings, pause or resume a running job,
+  and retry unfinished sets from terminal downloads or scans.
+- **Diagnostics:** Check worker and scheduler liveness, process UID/GID, the WebP
+  gate, and directory permissions. **Check Scryfall & CDN** makes a live sample
+  request. Ownership repair, UID/GID, and proxy configuration stay on the host.
+
+A saved list and its schedule are durable in `images.sqlite3`. Schedules run
+in the downloader even when the browser is closed; after downtime, at most
+one missed run is made up. A still-active or paused sync blocks another run,
+and pausing a job does not change its schedule. Use either this schedule or
+an external timer for the same sets, not both.
 
 ## Submit and control downloads
 
@@ -31,16 +62,19 @@ curl -X POST "http://127.0.0.1:8765/jobs/$job_id/resume"
 - Send an `Idempotency-Key` header to retry a submission without creating another job. The same normalized request and key return the original job, even after a server restart; a changed request returns `409`. Keys are retained with the latest 100 jobs, not indefinitely.
 - Include `"min_quality":"png"` to upgrade a valid image only to an improved scan meeting that floor. Other floors are `large` (672 × 936), `normal` (488 × 680), and `small` (146 × 204). The `png` floor also requires lossless PNG at 744 × 1040 or larger. Either orientation counts.
 - `GET /jobs/{id}`: shows totals and per-set progress. `cached` includes validated files already on disk; imported files with no known language appear under `languages.unknown`. `below_quality` counts retained or newly fetched images that did not meet an explicit floor. Image totals are `null` until the set is resolved. Each face is counted separately.
-- `GET /jobs`: lists recent jobs. Terminal job states are `completed`, `partial`, and `failed`.
+- `GET /jobs`: lists recent jobs; `?summary=1` omits per-set details and lists `set_codes`. Terminal job states are `completed`, `partial`, and `failed`.
 - `GET /sets`: returns the 24-hour Scryfall set catalogue, including release dates, set types, and `parent_set_code` for related token sets. `GET /health`: checks the local job worker (`200` or `503`), without contacting Scryfall or requiring a token. Use a job's `updated_at` and progress to check for stalls.
-- `POST /jobs/{id}/pause`: parks a queued job immediately or returns `202` while a running job is `pausing`. Poll until `paused`; the downloader stops dispatching work and drains in-flight requests. `POST /jobs/{id}/resume` requeues a paused job under the same ID. Terminal jobs cannot be resumed; submit a new job to retry them.
+- `POST /jobs/{id}/pause`: parks a queued job immediately or returns `202` while a running job is `pausing`. Poll until `paused`; the downloader stops dispatching work and drains in-flight requests. `POST /jobs/{id}/resume` requeues a paused job under the same ID.
+- `POST /jobs/{id}/retry` with `{}` submits only the unfinished sets of a terminal `partial` or `failed` download or scan. Workers do not automatically retry a job that finished with permanent gaps.
+- `GET /sync-list` shows the saved policy and last/next run. `PUT /sync-list` replaces the policy with `sets` (0–100 codes), the job language/quality/refresh fields, `include_tokens` (boolean), `new_releases_days` (1–90 or `null`), and `interval_hours` (1–720 or `null`). `POST /sync-list/run` with `{}` queues the saved list and accepts an `Idempotency-Key`.
+- `GET /diagnostics` reports local checks and the most recent upstream probe; `GET /diagnostics?probe=1` checks Scryfall's card API and its image CDN, reusing a result for up to one minute.
 
 Job history, pause state, progress, and image checksums are stored in `images.sqlite3` under `--data`. After a restart, paused jobs stay paused; interrupted running jobs are requeued automatically. On resume, the active set's counts are rebuilt as its existing files are checked; valid images count as `cached` and are not fetched again. Earlier finished sets are not rerun.
 
 ### Scan, tidy, and refresh
 
 - `{"sets":["msh"],"operation":"scan","min_quality":"large"}` inspects the local Forge keys without changing the library or fetching CDN images. Check `missing`, `unavailable`, `corrupt`, `below_quality`, `legacy`, and sample `issues` per set. Submit a download for that set to repair missing or corrupt images; include a quality floor only when upgrading.
-- `{"sets":["msh"],"operation":"tidy"}` previews confirmed `.fullborder` → `.full` renames. Review `issues` and repeat with `"apply":true` to apply a fresh check. Tidy preserves bytes and ownership, never overwrites a destination, and leaves conflicting, unknown, or hardlinked names alone. Apply requires POSIX directory operations and hard links. Stop other writers to the same image folders before applying.
+- `{"sets":["msh"],"operation":"tidy"}` previews confirmed `.fullborder` → `.full` renames. Once the preview is terminal, read every page of `GET /jobs/{id}/renames` via `next_offset`, then send `POST /jobs/{id}/apply` with `{}`. Apply uses only that persisted plan and rechecks each source's checksum and destination; it will not touch a file that appeared or changed after the preview. Tidy preserves bytes and ownership, never overwrites a destination, and leaves conflicts alone. It requires POSIX directory operations and hard links. Stop other writers to these folders before applying.
 - Download jobs can opt into `"refresh_language":true` to prefer a higher-ranked language for an image of known provenance, or `"refresh_scan":true` to accept a later `image_updated_at` for the same printing and language. Refreshes must preserve or improve pixel dimensions and cannot replace a PNG with a lossy format. Untracked local images are not assumed to be in any language. These flags use the regular 24-hour metadata cache; they do not force an upstream refresh.
 
 Scryfall metadata is cached for 24 hours per set and language selection. English metadata is included as a naming and coverage reference even when English is not in the requested preference list.
@@ -82,8 +116,9 @@ Drop `--dry-run` to apply. The command runs offline and only changes mismatched 
 
 ## Scheduled sync without Hermes
 
-Run one invocation per tick from DSM Task Scheduler, systemd, or a Hermes
-script-only cron. No browser, model, or persistent client process is needed.
+Use the built-in schedule for a saved sync list, or run one invocation per
+tick from DSM Task Scheduler, systemd, or a Hermes script-only cron. No
+browser, model, or persistent external client process is needed.
 
 ```sh
 # Sync a curated set and all token children listed in the catalogue.
@@ -132,8 +167,9 @@ variable with `-e SCRYFALL_ENABLE_WEBP` or `-e SCRYFALL_API_TOKEN`.
 
 Before upgrading a library, take a consistent backup of `/data` (including
 the SQLite state) and the mounted pictures. Restore the matching pre-upgrade
-state and pictures before downgrading to v0.2.0, which cannot write the new
-database schema.
+state and pictures before downgrading. Version v0.2.0 cannot write the new
+database schema, and older releases do not preserve saved sync schedules or
+approved rename plans.
 
 ## Release a version
 

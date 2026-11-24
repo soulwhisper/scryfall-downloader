@@ -36,9 +36,9 @@ class MaintenanceTest(unittest.TestCase):
         self.image = pixel_png(90)
         self.stop = Event()
 
-    def maintain(self, *, asset=None, previous=None, minimum=None, tidy=False, apply=False):
+    def maintain(self, *, asset=None, previous=None, minimum=None, tidy=False, approved=None):
         return maintain(self.root, asset or self.asset, previous, self.stop, minimum, False,
-                        tidy=tidy, apply=apply)
+                        tidy=tidy, apply=approved is not None, expected=approved)
 
     def test_scan_distinguishes_missing_from_unavailable(self):
         self.assertEqual(self.maintain().outcome, "unavailable")
@@ -59,10 +59,11 @@ class MaintenanceTest(unittest.TestCase):
 
     def test_checksum_mismatch_blocks_tidy(self):
         self.legacy.write_bytes(self.image)
+        approved = self.maintain(tidy=True).rename
         digest = hashlib.sha256(pixel_png(91)).hexdigest()
         prev = SavedImage(None, ".png", len(self.image), digest, None, self.legacy.name)
-        result = self.maintain(previous=prev, tidy=True, apply=True)
-        self.assertEqual(result.outcome, "corrupt")
+        result = self.maintain(previous=prev, tidy=True, approved=approved)
+        self.assertEqual(result.outcome, "failed")
         self.assertTrue(result.legacy)
         self.assertIn("checksum mismatch", result.issue)
         self.assertTrue(self.legacy.exists())
@@ -84,7 +85,7 @@ class MaintenanceTest(unittest.TestCase):
         self.assertTrue(self.legacy.exists())
         self.assertFalse(self.canonical.exists())
 
-        result = self.maintain(previous=prev, minimum="small", tidy=True, apply=True)
+        result = self.maintain(previous=prev, minimum="small", tidy=True, approved=preview.rename)
         self.assertEqual(result.outcome, "tidied")
         self.assertTrue(result.below_quality)
         self.assertIsNone(result.issue)
@@ -96,16 +97,30 @@ class MaintenanceTest(unittest.TestCase):
         self.assertTrue(os.path.samestat(original, current))
         self.assertEqual((stat.S_IMODE(current.st_mode), current.st_uid, current.st_gid, current.st_nlink),
                          (0o640, original.st_uid, original.st_gid, 1))
+        replay = self.maintain(previous=prev, tidy=True, approved=preview.rename)
+        self.assertEqual(replay.outcome, "cached")
+        self.assertEqual(replay.saved, result.saved)
+
+    def test_changed_source_is_not_renamed_under_old_approval(self):
+        self.legacy.write_bytes(self.image)
+        approved = self.maintain(tidy=True).rename
+        changed = pixel_png(91)
+        self.legacy.write_bytes(changed)
+        result = self.maintain(tidy=True, approved=approved)
+        self.assertEqual(result.outcome, "failed")
+        self.assertEqual(self.legacy.read_bytes(), changed)
+        self.assertFalse(self.canonical.exists())
 
     def test_tidy_rejects_exact_and_ambiguous_names(self):
         self.legacy.write_bytes(self.image)
+        approved = self.maintain(tidy=True).rename
         rival = pixel_png(91)
         for name in ("Oak.full.png", "OAK.full.PNG", "Oak.full.webp", "Oak.fullborder.PNG"):
             with self.subTest(name=name):
                 path = self.folder / name
                 path.write_bytes(rival)
-                result = self.maintain(tidy=True, apply=True)
-                self.assertEqual(result.outcome, "cached")
+                result = self.maintain(tidy=True, approved=approved)
+                self.assertEqual(result.outcome, "failed")
                 self.assertIn(str(path), result.issue)
                 self.assertEqual(self.legacy.read_bytes(), self.image)
                 self.assertEqual(path.read_bytes(), rival)
@@ -114,17 +129,18 @@ class MaintenanceTest(unittest.TestCase):
 
     def test_tidy_leaves_unconfirmed_keys_alone(self):
         self.legacy.write_bytes(self.image)
-        result = self.maintain(asset=Asset(self.asset.stem, ()), tidy=True, apply=True)
+        result = self.maintain(asset=Asset(self.asset.stem, ()), tidy=True)
         self.assertEqual(result.outcome, "unavailable")
         self.assertTrue(self.legacy.exists())
         self.assertFalse(self.canonical.exists())
 
     def test_tidy_rejects_hardlinked_files(self):
         self.legacy.write_bytes(self.image)
+        approved = self.maintain(tidy=True).rename
         alias = self.folder / "alias.png"
         os.link(self.legacy, alias)
-        result = self.maintain(tidy=True, apply=True)
-        self.assertEqual(result.outcome, "cached")
+        result = self.maintain(tidy=True, approved=approved)
+        self.assertEqual(result.outcome, "failed")
         self.assertIn("hardlinked", result.issue)
         self.assertEqual(alias.read_bytes(), self.image)
         self.assertTrue(self.legacy.exists())
@@ -133,17 +149,18 @@ class MaintenanceTest(unittest.TestCase):
     def test_unsafe_paths_and_directory_errors_propagate(self):
         self.legacy.symlink_to(self.folder / "missing.png")
         with self.assertRaises(OSError):
-            self.maintain(tidy=True, apply=True)
+            self.maintain(tidy=True)
         self.assertTrue(self.legacy.is_symlink())
         self.legacy.unlink()
         self.legacy.write_bytes(self.image)
         with patch("maintenance.os.listdir", side_effect=PermissionError("cannot list directory")):
             with self.assertRaises(PermissionError):
-                self.maintain(tidy=True, apply=True)
+                self.maintain(tidy=True)
         self.assertFalse(self.canonical.exists())
 
     def test_cancellation_before_link_leaves_original_name(self):
         self.legacy.write_bytes(self.image)
+        approved = self.maintain(tidy=True).rename
         listdir = os.listdir
 
         def interrupt(fd):
@@ -151,12 +168,13 @@ class MaintenanceTest(unittest.TestCase):
             return listdir(fd)
 
         with patch("maintenance.os.listdir", side_effect=interrupt), self.assertRaises(DownloadInterrupted):
-            self.maintain(tidy=True, apply=True)
+            self.maintain(tidy=True, approved=approved)
         self.assertTrue(self.legacy.exists())
         self.assertFalse(self.canonical.exists())
 
     def test_racing_destination_is_never_overwritten(self):
         self.legacy.write_bytes(self.image)
+        approved = self.maintain(tidy=True).rename
         link = os.link
         rival = pixel_png(91)
 
@@ -165,14 +183,15 @@ class MaintenanceTest(unittest.TestCase):
             return link(*args, **kwargs)
 
         with patch("maintenance.os.link", side_effect=race):
-            result = self.maintain(tidy=True, apply=True)
-        self.assertEqual(result.outcome, "cached")
+            result = self.maintain(tidy=True, approved=approved)
+        self.assertEqual(result.outcome, "failed")
         self.assertIn(str(self.canonical), result.issue)
         self.assertEqual(self.canonical.read_bytes(), rival)
         self.assertEqual(self.legacy.read_bytes(), self.image)
 
     def test_source_replaced_after_link_leaves_both_images(self):
         self.legacy.write_bytes(self.image)
+        approved = self.maintain(tidy=True).rename
         link = os.link
         rival = pixel_png(91)
 
@@ -182,8 +201,8 @@ class MaintenanceTest(unittest.TestCase):
             self.legacy.write_bytes(rival)
 
         with patch("maintenance.os.link", side_effect=race):
-            result = self.maintain(tidy=True, apply=True)
-        self.assertEqual(result.outcome, "cached")
+            result = self.maintain(tidy=True, approved=approved)
+        self.assertEqual(result.outcome, "failed")
         self.assertIsNone(result.saved)
         self.assertIn("changed during tidy", result.issue)
         self.assertEqual(self.legacy.read_bytes(), rival)

@@ -73,6 +73,7 @@ jobs:
             docker logs "$container"
             exit 1
           fi
+          curl --fail --silent --show-error --max-time 5 "http://$address/" >/dev/null
 
       - name: Publish container and GitHub release
         shell: bash

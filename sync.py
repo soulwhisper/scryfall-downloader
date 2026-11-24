@@ -1,7 +1,7 @@
 """Run a one-shot Scryfall downloader sync against the headless REST API."""
 
 import argparse
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from hashlib import sha256
 import http.client
 import json
@@ -16,6 +16,8 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+
+from set_catalog import expand_sets
 
 
 DEFAULT_LANGUAGES = ["zhs", "en"]
@@ -128,31 +130,12 @@ def select_sets(args, rows, today):
         or not re.fullmatch(r"[a-z0-9]{1,12}", row["code"]) for row in rows
     ):
         raise SyncError("GET /sets returned an invalid set catalogue")
-    catalog = {row["code"]: row for row in rows}
-    explicit = list(dict.fromkeys(code.strip().lower() for code in args.sets))
-    unknown = [code for code in explicit if code not in catalog]
-    if unknown:
-        raise SyncError("Unknown Scryfall set code(s): " + ", ".join(map(repr, unknown)))
-    selected = dict.fromkeys(explicit)
-    if args.new_releases_days is not None:
-        for code, row in sorted(catalog.items()):
-            if row.get("digital") is not False or row.get("set_type") not in ("core", "expansion"):
-                continue
-            released = row.get("released_at")
-            if released is None:
-                continue
-            try:
-                age = (today - date.fromisoformat(released)).days
-            except (ValueError, TypeError):
-                raise SyncError(f"GET /sets returned an invalid release date for {code}") from None
-            if 0 <= age <= args.new_releases_days:
-                selected[code] = None
-    if args.include_tokens:
-        parents = set(selected)
-        for code, row in sorted(catalog.items()):
-            if row.get("set_type") == "token" and row.get("parent_set_code") in parents:
-                selected[code] = None
-    return list(selected)
+    explicit = (code.strip().lower() for code in args.sets)
+    try:
+        return expand_sets(rows, explicit, include_tokens=args.include_tokens,
+                           new_releases_days=args.new_releases_days, today=today)
+    except ValueError as exc:
+        raise SyncError(str(exc)) from None
 
 
 def policy_for(args):

@@ -1,5 +1,6 @@
 *
 !Dockerfile
+!diagnostics.py
 !downloader.py
 !forge.py
 !imagefiles.py
@@ -7,4 +8,9 @@
 !ownership.py
 !set_catalog.py
 !sync.py
+!sync_list.py
 !upstream.py
+!web/
+!web/index.html
+!web/app.css
+!web/app.js

@@ -52,6 +52,33 @@ def _normalize(rows, *, cached=False):
     return result
 
 
+def expand_sets(rows, explicit, *, include_tokens, new_releases_days, today):
+    catalog = {row["code"]: row for row in rows}
+    selected = dict.fromkeys(explicit)
+    unknown = selected.keys() - catalog.keys()
+    if unknown:
+        raise ValueError("Unknown Scryfall set code(s): " + ", ".join(map(repr, sorted(unknown))))
+    if new_releases_days is not None:
+        for code, row in sorted(catalog.items()):
+            if row.get("digital") is not False or row.get("set_type") not in ("core", "expansion"):
+                continue
+            released = row.get("released_at")
+            if released is None:
+                continue
+            try:
+                age = (today - date.fromisoformat(released)).days
+            except (ValueError, TypeError):
+                raise ValueError(f"Invalid release date for {code}") from None
+            if 0 <= age <= new_releases_days:
+                selected[code] = None
+    if include_tokens:
+        parents = set(selected)
+        for code, row in sorted(catalog.items()):
+            if row.get("set_type") == "token" and row.get("parent_set_code") in parents:
+                selected[code] = None
+    return list(selected)
+
+
 class SetCatalog:
     def __init__(self, web: Web, path: Path):
         self.web = web
