@@ -429,6 +429,64 @@ class DownloaderTest(unittest.TestCase):
             self.assertEqual([j["id"] for j in self.api(port, "GET", "/jobs", headers=headers)["jobs"]], [job["id"]])
         self.assertEqual(upstream.image_requests, ["oak.png"])
 
+    def test_repair_remaps_inferred_art_from_a_v050_database(self):
+        scans = {f"en-{number}.png": pixel_png(number * 40) for number in (1, 2, 3)}
+        scans.update({f"ja-{number}.png": pixel_png(number * 40 + 1) for number in (1, 2, 3)})
+        cards = [dict(printing(n, lang, "Forest", f"{lang}-{n}.png"), id=str(UUID(int=n + offset)))
+                 for lang, offset in (("en", 0), ("ja", 10)) for n in (1, 2, 3)]
+        upstream = Upstream(cards, scans)
+        folder = self.root / "pics" / "cards" / "TST"
+        folder.mkdir(parents=True)
+        with closing(sqlite3.connect(self.root / "images.sqlite3")) as db, db:
+            db.execute("""CREATE TABLE images (
+                stem TEXT PRIMARY KEY, url TEXT, suffix TEXT NOT NULL, size INTEGER NOT NULL,
+                sha256 TEXT, language TEXT, file_name TEXT, source_id TEXT, image_updated_at TEXT
+            )""")
+            for index, number in enumerate((2, 3), 1):
+                body = scans[f"en-{number}.png"]
+                stem = f"Forest{index}.full"
+                (folder / f"{stem}.png").write_bytes(body)
+                db.execute("INSERT INTO images VALUES (?, ?, ?, ?, ?, ?, NULL, ?, NULL)",
+                           (f"pics/cards/TST/{stem}", IMAGE_ORIGIN + f"en-{number}.png",
+                            ".png", len(body), hashlib.sha256(body).hexdigest(), "en", str(UUID(int=number))))
+
+        with self.server(upstream, "") as port:
+            request = {"sets": ["tst"]}
+            scan = self.api(port, "POST", "/jobs", {**request, "operation": "scan"}, expect=202)
+            progress = self.wait_for(port, f"/jobs/{scan['id']}", "partial")["sets"]["tst"]
+            self.assertEqual((progress["cached"], progress["missing"]), (0, 3))
+            self.assertEqual(sum("different printing" in issue for issue in progress["issues"]), 2)
+            self.assertEqual((folder / "Forest1.full.png").read_bytes(), scans["en-2.png"])
+            self.assertEqual(upstream.image_requests, [])
+
+            job = self.api(port, "POST", "/jobs", request, expect=202)
+            progress = self.wait_for(port, f"/jobs/{job['id']}", "completed")["sets"]["tst"]
+            self.assertEqual((progress["downloaded"], progress["cached"]), (3, 0))
+        for number in (1, 2, 3):
+            self.assertEqual((folder / f"Forest{number}.full.png").read_bytes(), scans[f"en-{number}.png"])
+        self.assertCountEqual(upstream.image_requests, ["en-1.png", "en-2.png", "en-3.png"])
+
+        # A new language request must not make the correctly bound artwork stale.
+        with self.server(upstream, "") as port:
+            job = self.api(port, "POST", "/jobs", {**request, "languages": ["ja"]}, expect=202)
+            progress = self.wait_for(port, f"/jobs/{job['id']}", "completed")["sets"]["tst"]
+            self.assertEqual((progress["downloaded"], progress["cached"], progress["languages"]), (0, 3, {"ja": 0, "en": 3}))
+        self.assertCountEqual(upstream.image_requests, ["en-1.png", "en-2.png", "en-3.png"])
+
+    def test_download_leaves_untracked_images_at_inferred_slots_untouched(self):
+        original = pixel_png(20)
+        image = self.root / "pics" / "cards" / "TST" / "Forest.full.png"
+        image.parent.mkdir(parents=True)
+        image.write_bytes(original)
+        upstream = Upstream([printing(1, "en", "Forest", "forest.png")], {"forest.png": pixel_png(80)})
+        with self.server(upstream, "") as port:
+            job = self.api(port, "POST", "/jobs", {"sets": ["tst"]}, expect=202)
+            progress = self.wait_for(port, f"/jobs/{job['id']}", "failed")["sets"]["tst"]
+            self.assertEqual((progress["cached"], progress["downloaded"]), (0, 0))
+            self.assertIn("cannot verify the printing for this Forge art slot", progress["errors"][0])
+        self.assertEqual(image.read_bytes(), original)
+        self.assertEqual(upstream.image_requests, [])
+
     def test_v020_checksum_is_preserved_when_database_is_upgraded(self):
         good = pixel_png(80)
         wrong = pixel_png(90)

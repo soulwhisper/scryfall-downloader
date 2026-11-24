@@ -3,6 +3,7 @@
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 import hashlib
+import json
 from pathlib import Path
 import re
 import unicodedata
@@ -286,6 +287,16 @@ def _candidate_rank(card, language_rank):
     return _treatment_priority(card), language_rank.get(lang, len(language_rank)), lang, card.get("id") or ""
 
 
+def _printing_key(code, number, name, side, edition, entry):
+    # An index such as Swamp2 is a destination, not a printing identity.
+    qualifier = ()
+    if entry is not None:
+        rows = edition.cards.get(number) or edition.cards.get("F" + number, ())
+        if sum(row.name == entry.name for row in rows) > 1:
+            qualifier = (entry.artist, entry.variant, entry.flavor_name)
+    return json.dumps((code, number, name, side, *qualifier), ensure_ascii=False, separators=(",", ":"))
+
+
 def plan_images(
     code: str, cards: list[dict], edition: Edition | None, languages: list[str], webp: bool = False, *,
     all_languages: bool = False,
@@ -319,20 +330,23 @@ def plan_images(
                 continue
             for side, stem, found, legacy in _forge_keys(code, card if entry else representative,
                                                          edition, entry, indexes):
-                key = side, stem, found, legacy
+                key = side, stem, found, legacy, entry if stem.startswith("pics/cards/") else None
                 sources = candidates[key]
                 lang = card["lang"]
                 if all_languages or lang in language_rank:
                     sources.append((card, _printing_sources(card, _image_slot(card, side), webp)))
         if not candidates:
             issues.append(f"{number} {name}: no unique art slot in the Forge edition")
-        for (_side, stem, found, legacy), variants in candidates.items():
+        for (side, stem, found, legacy, entry), variants in candidates.items():
             sources = _unique_sources(group for _, group in variants)
             preferred = tuple(dict.fromkeys(
                 [card["lang"] for card, _ in variants if _treatment_priority(card) < 3]
                 + list(language_rank) + [card["lang"] for card, _ in variants]
             ))
-            desired.append((not found, not sources, number, name, Asset(stem, sources, legacy, preferred)))
+            printing_key = (_printing_key(code, number, name, side, edition, entry)
+                            if stem.startswith("pics/cards/") else None)
+            asset = Asset(stem, sources, legacy, preferred, printing_key=printing_key, inferred=not found)
+            desired.append((not found, not sources, number, name, asset))
 
     assets = []
     occupied = {}

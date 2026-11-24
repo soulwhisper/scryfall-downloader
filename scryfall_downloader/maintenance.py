@@ -81,6 +81,8 @@ def maintain(root: Path, asset: Asset, previous: SavedImage | None, stop, minimu
     if first.saved is None or first.shape is None:
         return Inspection("failed" if apply else "corrupt", legacy=legacy,
                           issue=f"{first.path}: invalid image or checksum mismatch")
+    if art_issue := first.art_issue:
+        return Inspection("missing", legacy=legacy, issue=f"{first.path}: {art_issue}")
     below = minimum is not None and not first.shape.meets(minimum)
     issue = f"{first.path}: below {minimum} quality" if below else None
     if issue is None and first.legacy:

@@ -65,14 +65,22 @@ usable source), `corrupt`, `below_quality`, `legacy`, and sample `issues`
 in the job receipt.
 
 Before downloading, the server validates existing files, including manually
-copied images and confirmed `.fullborder` aliases. It checks structure and
-dimensions, verifies PNG chunk checksums on new or unindexed files, and
-records SHA-256 for later checks. Unreadable files surface as permission
-errors. Run **Download / repair** with no quality floor to replace missing
-or corrupt images. Incomplete transfers and temporary CDN errors retry with
-backoff. A valid image is normally kept; an exact-key variant that would
-mask a replacement in Forge is removed only after a verified replacement
-is available.
+copied images at confirmed Forge keys and confirmed `.fullborder` aliases.
+It checks structure and dimensions, verifies PNG chunk checksums on new or
+unindexed files, and records SHA-256 for later checks. Unreadable files
+surface as permission errors. Run **Download / repair** with no quality floor
+to replace missing or corrupt images. Incomplete transfers and temporary CDN
+errors retry with backoff. A higher-priority filename stops masking a
+replacement only after the replacement is verified.
+
+For card images, the receipt in `images.sqlite3` binds the checksum and
+source to the Scryfall printing and face independently of the Forge
+filename. If inferred art numbering changes, a valid checksum alone is not
+enough: **Scan library** reports the missing correct art, and **Download /
+repair** replaces a proven mismatch only after verifying the replacement.
+Older receipts can be bound when their source matches the current asset.
+Valid files without verifiable provenance at inferred keys are reported and
+left untouched. Verify or move them aside before attempting repair there.
 
 ## Quality and refresh
 
