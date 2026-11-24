@@ -4,8 +4,9 @@ import { $, badge, button, feedback, link, node, stat, utc } from "./ui.js";
 
 const terminal = new Set(["completed", "partial", "failed"]);
 const operations = {download: "Download", scan: "Library scan", tidy: "Tidy preview"};
-const sources = {api: "On demand", sync_manual: "Saved list", sync_schedule: "Scheduled sync", retry: "Retry", tidy_apply: "Approved tidy"};
-const nameOf = (job) => job.apply ? "Apply renames" : operations[job.operation] || job.operation;
+const sources = {api: "On demand", sync_manual: "Saved list", sync_schedule: "Scheduled sync", retry: "Retry",
+  tidy_apply: "Approved tidy", archive: "On demand", archive_bootstrap: "First start"};
+const nameOf = (job) => job.archive ? "Full catalogue sync" : job.apply ? "Apply renames" : operations[job.operation] || job.operation;
 const jobUrl = (id) => `/jobs/${encodeURIComponent(id)}`;
 const jobHash = (id) => `#jobs/${encodeURIComponent(id)}`;
 
@@ -126,6 +127,7 @@ $("library-form").addEventListener("submit", (event) => {
     goToJob(await post("/jobs", {sets: libraryPicker.codes, operation, ...options}));
   });
 });
+$("run-archive").addEventListener("click", () => act($("run-archive"), async () => goToJob(await post("/archive/run"))));
 
 function goToJob(job) {
   feedback(`${nameOf(job)} accepted. Follow the receipt for its result.`);
@@ -135,7 +137,7 @@ function goToJob(job) {
 
 let historySignature = "";
 function drawHistory(jobs) {
-  const signature = JSON.stringify([jobId, jobs.map((job) => [job.id, job.status, job.sets_finished])]);
+  const signature = JSON.stringify([jobId, jobs.map((job) => [job.id, job.status, job.sets_finished, job.set_codes.length])]);
   if (signature === historySignature) return;
   historySignature = signature;
   const focused = $("job-list").contains(document.activeElement) ? document.activeElement.hash : null;
@@ -145,7 +147,7 @@ function drawHistory(jobs) {
     receipt.className = "job-link";
     if (job.id === jobId) receipt.setAttribute("aria-current", "true");
     const codes = job.set_codes;
-    const title = codes.slice(0, 4).map((code) => code.toUpperCase()).join(", ");
+    const title = codes.length ? codes.slice(0, 4).map((code) => code.toUpperCase()).join(", ") : "Catalogue pending";
     receipt.append(node("strong", nameOf(job)), badge(job.status), node("small",
       `${title}${codes.length > 4 ? ` +${codes.length - 4}` : ""} · ${job.sets_finished}/${codes.length} sets · ${utc(job.created_at)}`));
     item.append(receipt);
@@ -205,6 +207,7 @@ function drawJob(job) {
   stamps.append(stat("Created", utc(job.created_at)), stat("Last progress", utc(job.updated_at)), stat("Finished", utc(job.finished_at)));
   const receipt = node("p", `Job ${job.id}`, "caption mono");
   $("job-meta").replaceChildren(heading, meta, stamps, receipt);
+  if (job.error) $("job-meta").append(node("p", job.error, "callout"));
   if (job.preview_id) $("job-meta").append(link("Open source preview", jobHash(job.preview_id)));
   const actionKey = `${job.id}/${job.status}`;
   if (actionSignature !== actionKey) {
@@ -228,10 +231,19 @@ function drawJob(job) {
     $("job-actions").replaceChildren(...actions);
   }
   const reports = $("job-sets");
-  const oldOpen = previous?.id === job.id ? new Map(Array.from(reports.children, (item) => [item.dataset.code, item.open])) : new Map();
+  const entries = Object.entries(job.sets);
   const focused = reports.contains(document.activeElement) ? document.activeElement.closest("details")?.dataset.code : null;
-  reports.replaceChildren(...Object.entries(job.sets).map(([code, report], index) =>
-    fullDetail(report, code, oldOpen.get(code) ?? (job.current_set === code || index === 0))));
+  if (previous?.id !== job.id || reports.children.length !== entries.length) {
+    reports.replaceChildren(...entries.map(([code, report], index) =>
+      fullDetail(report, code, job.current_set === code || index === 0)));
+  } else {
+    entries.forEach(([code, report], index) => {
+      if (JSON.stringify(previous.sets[code]) !== JSON.stringify(report)) {
+        const old = reports.children[index];
+        old.replaceWith(fullDetail(report, code, old.open || job.current_set === code));
+      }
+    });
+  }
   if (focused) Array.from(reports.children).find((item) => item.dataset.code === focused)?.querySelector("summary").focus({preventScroll: true});
   drawRename(job);
 }

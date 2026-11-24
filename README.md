@@ -27,6 +27,6 @@ The local server defaults to the repository's `data/` directory (`--data DIR`
 overrides it); the container uses `/data`. Keep one downloader per data directory.
 For LAN access, see [authentication and HTTPS](docs/operations.md#network-and-proxies).
 
-- [REST API](docs/api.md): jobs, saved sync list, and diagnostics.
-- [Forge image library](docs/library.md): paths, repair, upgrades, and Forge setup.
-- [Operations](docs/operations.md): schedules, proxy setup, containers, and releases.
+- [REST API](docs/api.md): jobs, catalogue sync, saved sync list, and diagnostics.
+- [Forge image library](docs/library.md): layout, art selection, repair, and upgrades.
+- [Operations](docs/operations.md): first-start backfill, schedules, proxies, containers, and releases.

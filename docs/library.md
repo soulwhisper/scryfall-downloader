@@ -10,8 +10,6 @@ Paths are relative to the data directory (`--data`):
 - `pics/tokens/<SET_CODE>/` holds tokens. When Forge defines the token, the
   folder uses its edition `Code` (not `Code2`) and the file uses its token
   name. Otherwise, the folder uses the uppercase Scryfall code.
-- `extras/<SET_CODE>/` holds printings whose filenames would collide with a
-  Forge key, rather than overwriting another printing.
 
 Forge edition files supply the short folder code (`Code2`, when defined) and
 art numbering. The downloader looks for editions on GitHub unless you pass
@@ -31,6 +29,32 @@ Forge's cache at `pics/tokens/`. Prefer a separate card image directory:
 Forge's local lookup order is JPG → PNG → WebP, so an existing JPEG with the
 same stem can take precedence over a PNG. Use separate data directories for
 independent language collections.
+
+## Full catalogue sync
+
+Use **Library operations → Sync full catalogue** or enable the
+[first-start job](operations.md#first-start-archive). The job streams
+[Scryfall's All Cards export](https://scryfall.com/docs/api/bulk-data) into a
+local index and visits every set in it, newest first by the earliest dated
+printing in each set. It does not filter by set type, legality, paper or
+digital status, or language. Missing and placeholder scans are unavailable.
+
+The only image outputs are `pics/cards/` and `pics/tokens/`. A borderless,
+extended-art, showcase, or full-art printing gets its own numbered filename
+when Forge has a distinct art slot. Two printings can have the same
+illustration but different collector numbers and frames; they are not
+merged. For example `WAR #97` and `#97★` remain art 1 and art 2.
+
+For sources sharing one Forge key, prefer Phyrexian (`ph`), then
+`ja` tagged `jpwalker`, then alternate-art treatments, then `zhs`, `en`,
+and other languages. Ordinary Japanese has no language boost. Per-set
+requests still honor the selected languages, and valid existing images
+are kept unless an explicit replacement policy permits an upgrade.
+
+Forge cannot address a second image for a shared key. A confirmed key
+takes precedence over an inferred one. Unmapped variants of a known card
+and unresolved key collisions appear in the receipt; they do not overwrite
+another art or get a second copy outside Forge's folders.
 
 ## Scan and repair
 

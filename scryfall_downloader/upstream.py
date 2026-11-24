@@ -62,7 +62,8 @@ class SameOriginRedirect(HTTPRedirectHandler):
 
 
 class Web:
-    def __init__(self, proxy: str | None = None):
+    def __init__(self, proxy: str | None = None, *, timeout: float = 20):
+        self.timeout = timeout
         handlers = [SameOriginRedirect(), HTTPSHandler(context=ssl.create_default_context())]
         if proxy is not None:
             try:
@@ -80,7 +81,7 @@ class Web:
         if origin(url) != host:
             raise UpstreamError(f"Expected a URL on {host}")
         request = Request(url, headers={"User-Agent": "ForgeScryfallDownloader/1.0", "Accept": accept})
-        return self.opener.open(request, timeout=20)
+        return self.opener.open(request, timeout=self.timeout)
 
 
 def fresh(path: Path) -> bool:
@@ -308,6 +309,7 @@ def save_image(reply, file, suffix: str, stop) -> tuple[int, str, ImageSize]:
         raise InvalidImage("Invalid image Content-Length") from None
     if length is not None and length > MAX_IMAGE_BYTES:
         raise UpstreamError("Image exceeds the 16 MiB limit")
+
     digest = hashlib.sha256()
     size = 0
     while True:
@@ -410,9 +412,10 @@ def _retire_masking(paths: tuple[Path, ...], known: dict[Path, LocalImage]):
             path.unlink()
 
 
-def download(web: Web, root: Path, asset: Asset, previous: SavedImage | None, stop, minimum: str | None,
-             webp: bool = False, refresh_language: bool = False,
-             refresh_scan: bool = False) -> tuple[str, SavedImage | None, bool]:
+def download(
+    web: Web, root: Path, asset: Asset, previous: SavedImage | None, stop, minimum: str | None,
+    webp: bool = False, refresh_language: bool = False, refresh_scan: bool = False,
+) -> tuple[str, SavedImage | None, bool]:
     """Reuse Forge's lookup order unless an explicit policy allows a verified replacement."""
     stem = _image_stem(root, asset)
     known = {}
