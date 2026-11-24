@@ -1,0 +1,5 @@
+*
+!Dockerfile
+!downloader.py
+!forge.py
+!upstream.py
