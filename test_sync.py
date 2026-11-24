@@ -107,7 +107,7 @@ class SyncTest(unittest.TestCase):
         posts = []
 
         def respond(method, path, headers, body):
-            if path == "/sets":
+            if path == "/api/v1/sets":
                 return 200, {"sets": rows}, {}
             if method == "GET":
                 return 200, {"jobs": []}, {}
@@ -133,7 +133,7 @@ class SyncTest(unittest.TestCase):
         jobs = {}
 
         def respond(method, path, headers, body):
-            if path == "/sets":
+            if path == "/api/v1/sets":
                 return 200, {"sets": [set_row("tst")]}, {}
             if method == "GET":
                 return 200, {"jobs": list(jobs.values())}, {}
@@ -169,9 +169,9 @@ class SyncTest(unittest.TestCase):
 
         def respond(method, path, _headers, body):
             calls.append((method, path, body["sets"][0] if body else None))
-            if path == "/sets":
+            if path == "/api/v1/sets":
                 return 200, {"sets": [set_row(code) for code in ("one", "two", "three")]}, {}
-            if path == "/jobs/first":
+            if path == "/api/v1/jobs/first":
                 return 200, {"id": "first", "status": "completed"}, {}
             if method == "GET":
                 return 200, {"jobs": []}, {}
@@ -183,12 +183,12 @@ class SyncTest(unittest.TestCase):
             result, out, err = run_sync(url, "--round", "test", "one", "two", "three")
         self.assertEqual(result, 1)
         self.assertIn("one: completed; job first", out)
-        self.assertIn("two: not confirmed; POST /jobs returned HTTP 503", err)
+        self.assertIn("two: not confirmed; POST /api/v1/jobs returned HTTP 503", err)
         self.assertIn("rerun with the same --round test", err)
         self.assertIn("three: not submitted", err)
         self.assertEqual(calls, [
-            ("GET", "/sets", None), ("GET", "/jobs", None), ("POST", "/jobs", "one"),
-            ("GET", "/jobs/first", None), ("GET", "/jobs", None), ("POST", "/jobs", "two"),
+            ("GET", "/api/v1/sets", None), ("GET", "/api/v1/jobs", None), ("POST", "/api/v1/jobs", "one"),
+            ("GET", "/api/v1/jobs/first", None), ("GET", "/api/v1/jobs", None), ("POST", "/api/v1/jobs", "two"),
         ])
 
     def test_cross_origin_redirect_is_not_followed_with_bearer(self):
@@ -200,7 +200,7 @@ class SyncTest(unittest.TestCase):
 
         with local_api(other) as other_url:
             def redirect(*_args):
-                return 302, {}, {"Location": f"{other_url}/sets"}
+                return 302, {}, {"Location": f"{other_url}/api/v1/sets"}
 
             with local_api(redirect) as url:
                 result, _, err = run_sync(url, "tst")

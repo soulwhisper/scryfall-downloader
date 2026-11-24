@@ -1,5 +1,6 @@
 "use strict";
 
+const API_PREFIX = "/api/v1";
 const $ = (id) => document.getElementById(id);
 const terminal = new Set(["completed", "partial", "failed"]);
 const labels = {ok: "Ready", unavailable: "Unavailable", not_writable: "Not writable", pending: "Not checked"};
@@ -75,7 +76,7 @@ async function request(path, {method = "GET", body, key, timeout = 30_000} = {})
   const controller = new AbortController();
   const expiry = setTimeout(() => controller.abort(), timeout);
   try {
-    const response = await fetch(path, {method, headers, credentials: "omit", redirect: "error",
+    const response = await fetch(API_PREFIX + path, {method, headers, credentials: "omit", redirect: "error",
       signal: controller.signal, body: body === undefined ? undefined : JSON.stringify(body)});
     let data;
     try { data = await response.json(); } catch (error) {

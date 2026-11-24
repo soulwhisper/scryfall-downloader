@@ -103,11 +103,40 @@ class DownloaderTest(unittest.TestCase):
             headers = dict(headers or {})
             if body is not None:
                 headers["Content-Type"] = "application/json"
-            conn.request(method, path, body, headers)
+            conn.request(method, "/api/v1" + path, body, headers)
             with conn.getresponse() as response:
                 data = json.load(response)
                 self.assertEqual(response.status, expect, data)
                 return data
+
+    def test_default_portal_and_versioned_job_location(self):
+        upstream = Upstream([printing(1, "en", "Oak", "oak.png")], {"oak.png": pixel_png(16)})
+        body = b'{"sets":["tst"]}'
+        headers = {"Authorization": "Bearer console-test-token", "Content-Type": "application/json"}
+        with self.server(upstream, "1 C Oak\n", token="console-test-token") as port, \
+             closing(HTTPConnection("127.0.0.1", port, timeout=3)) as conn:
+            conn.request("GET", "/")
+            with conn.getresponse() as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.getheader("Content-Type"), "text/html; charset=utf-8")
+                response.read()
+            for method, path, payload in (("GET", "/jobs", None), ("GET", "/health", None),
+                                          ("PUT", "/sync-list", body), ("POST", "/jobs", body),
+                                          ("GET", "/api/v10/jobs", None)):
+                with self.subTest(method=method, path=path):
+                    conn.request(method, path, payload, headers)
+                    with conn.getresponse() as response:
+                        self.assertEqual(response.status, 404, response.read())
+            conn.request("POST", "/api/v1/jobs", body, headers)
+            with conn.getresponse() as response:
+                self.assertEqual(response.status, 202)
+                job = json.load(response)
+                location = response.getheader("Location")
+            self.assertEqual(location, f"/api/v1/jobs/{job['id']}")
+            conn.request("GET", location, headers=headers)
+            with conn.getresponse() as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(json.load(response)["id"], job["id"])
 
     def wait_for(self, port, path, status, *, headers=None):
         deadline = time.monotonic() + 6

@@ -41,6 +41,7 @@ TERMINAL = frozenset({"completed", "partial", "failed"})
 COUNTERS = ("downloaded", "cached", "unavailable", "failed", "missing", "corrupt", "tidied")
 OPERATIONS = frozenset({"download", "scan", "tidy"})
 PAGE_SIZE = 100
+API_PREFIX = "/api/v1"
 WEB_ROOT = Path(__file__).resolve().with_name("web")
 WEB_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -523,6 +524,10 @@ def optional_integer(body, name, maximum):
 POLICY_FIELDS = {"sets", "languages", "min_quality", "refresh_language", "refresh_scan"}
 
 
+def api_path(path: str) -> str | None:
+    return path[len(API_PREFIX):] if path.startswith(API_PREFIX + "/") else None
+
+
 class API(BaseHTTPRequestHandler):
     timeout = 10  # Don't leave API threads parked on stalled clients.
 
@@ -568,6 +573,9 @@ class API(BaseHTTPRequestHandler):
         path, _, raw_query = self.path.partition("?")
         if asset := self.server.assets.get(path):
             return self.reply(200, *asset)
+        path = api_path(path)
+        if path is None:
+            return self.respond(404, {"error": "Not found"})
         jobs = self.server.jobs
         if path == "/health":
             alive = jobs.worker.is_alive() and not jobs.stopping
@@ -635,11 +643,13 @@ class API(BaseHTTPRequestHandler):
         self.mutate()
 
     def mutate(self):
+        path = api_path(self.path.partition("?")[0])
+        if path is None:
+            return self.respond(404, {"error": "Not found"})
         if not self.browser_origin_allowed():
             return self.respond(403, {"error": "Cross-origin writes are not allowed"})
         if not self.authorized():
             return
-        path = self.path.partition("?")[0]
         parts = path.split("/")
         post = self.command == "POST"
         action = parts[3] if post and len(parts) == 4 and parts[1] == "jobs" else None
@@ -677,7 +687,7 @@ class API(BaseHTTPRequestHandler):
                 if not isinstance(operation, str) or operation not in OPERATIONS:
                     raise ValueError("operation must be download, scan, or tidy")
                 if flag_from(body, "apply"):
-                    raise ValueError("Create a tidy preview, then use POST /jobs/{id}/apply")
+                    raise ValueError(f"Create a tidy preview, then use POST {API_PREFIX}/jobs/{{id}}/apply")
                 options = policy_from(body)
                 if operation != "download" and (options["refresh_language"] or options["refresh_scan"]):
                     raise ValueError("Refresh options require download")
@@ -699,7 +709,7 @@ class API(BaseHTTPRequestHandler):
             return self.respond(503, {"error": str(exc)})
         if job is None:
             return self.respond(404, {"error": "Not found"})
-        return self.respond(202, job, location=f"/jobs/{job['id']}")
+        return self.respond(202, job, location=f"{API_PREFIX}/jobs/{job['id']}")
 
 
 class Server(ThreadingHTTPServer):

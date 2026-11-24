@@ -13,6 +13,7 @@ Web UI. `--data DIR` selects the output and cache directory (default: `data/`
 next to the program). `--forge-editions /path/to/Forge/res/editions` uses the
 edition files from your Forge release instead of looking them up on GitHub.
 Keep one downloader per data directory.
+REST clients use `/api/v1/` on the same port. Unprefixed API routes are not served.
 
 Keep the service on a trusted network. When publishing the port on a LAN, set
 `SCRYFALL_API_TOKEN` to protect management operations and use an HTTPS reverse
@@ -44,37 +45,38 @@ an external timer for the same sets, not both.
 ## Submit and control downloads
 
 ```sh
-curl -i http://127.0.0.1:8765/jobs \
+api='http://127.0.0.1:8765/api/v1'
+curl -i "$api/jobs" \
   -H 'Content-Type: application/json' \
   -d '{"sets":["mom","neo"],"languages":["zh-CN","en"]}'
 
 # Set job_id to the id from the response body or follow its Location header.
 job_id='paste-id-here'
-curl "http://127.0.0.1:8765/jobs/$job_id"
-curl http://127.0.0.1:8765/jobs
+curl "$api/jobs/$job_id"
+curl "$api/jobs"
 
-curl -X POST "http://127.0.0.1:8765/jobs/$job_id/pause"
-# Wait for GET /jobs/$job_id to report "paused" before resuming.
-curl -X POST "http://127.0.0.1:8765/jobs/$job_id/resume"
+curl -X POST "$api/jobs/$job_id/pause"
+# Wait for the job to report "paused" before resuming.
+curl -X POST "$api/jobs/$job_id/resume"
 ```
 
-- `POST /jobs`: accepts 1–10 exact Scryfall set codes, case-insensitive. Returns `202 Accepted` and a `Location` header. Request a separate token set such as `tmom` explicitly. `languages` is an optional preference list shared by all requested sets, defaulting to `["zhs","en"]`. Use `["ja"]` for Japanese only or `["ja","en"]` for Japanese with English fallback. Use [Scryfall language codes](https://scryfall.com/docs/api/languages); `zh-CN` and `zh-TW` are aliases for `zhs` and `zht`.
+- `POST /api/v1/jobs`: accepts 1–10 exact Scryfall set codes, case-insensitive. Returns `202 Accepted` and a versioned `Location` header. Request a separate token set such as `tmom` explicitly. `languages` is an optional preference list shared by all requested sets, defaulting to `["zhs","en"]`. Use `["ja"]` for Japanese only or `["ja","en"]` for Japanese with English fallback. Use [Scryfall language codes](https://scryfall.com/docs/api/languages); `zh-CN` and `zh-TW` are aliases for `zhs` and `zht`.
 - Send an `Idempotency-Key` header to retry a submission without creating another job. The same normalized request and key return the original job, even after a server restart; a changed request returns `409`. Keys are retained with the latest 100 jobs, not indefinitely.
 - Include `"min_quality":"png"` to upgrade a valid image only to an improved scan meeting that floor. Other floors are `large` (672 × 936), `normal` (488 × 680), and `small` (146 × 204). The `png` floor also requires lossless PNG at 744 × 1040 or larger. Either orientation counts.
-- `GET /jobs/{id}`: shows totals and per-set progress. `cached` includes validated files already on disk; imported files with no known language appear under `languages.unknown`. `below_quality` counts retained or newly fetched images that did not meet an explicit floor. Image totals are `null` until the set is resolved. Each face is counted separately.
-- `GET /jobs`: lists recent jobs; `?summary=1` omits per-set details and lists `set_codes`. Terminal job states are `completed`, `partial`, and `failed`.
-- `GET /sets`: returns the 24-hour Scryfall set catalogue, including release dates, set types, and `parent_set_code` for related token sets. `GET /health`: checks the local job worker (`200` or `503`), without contacting Scryfall or requiring a token. Use a job's `updated_at` and progress to check for stalls.
-- `POST /jobs/{id}/pause`: parks a queued job immediately or returns `202` while a running job is `pausing`. Poll until `paused`; the downloader stops dispatching work and drains in-flight requests. `POST /jobs/{id}/resume` requeues a paused job under the same ID.
-- `POST /jobs/{id}/retry` with `{}` submits only the unfinished sets of a terminal `partial` or `failed` download or scan. Workers do not automatically retry a job that finished with permanent gaps.
-- `GET /sync-list` shows the saved policy and last/next run. `PUT /sync-list` replaces the policy with `sets` (0–100 codes), the job language/quality/refresh fields, `include_tokens` (boolean), `new_releases_days` (1–90 or `null`), and `interval_hours` (1–720 or `null`). `POST /sync-list/run` with `{}` queues the saved list and accepts an `Idempotency-Key`.
-- `GET /diagnostics` reports local checks and the most recent upstream probe; `GET /diagnostics?probe=1` checks Scryfall's card API and its image CDN, reusing a result for up to one minute.
+- `GET /api/v1/jobs/{id}`: shows totals and per-set progress. `cached` includes validated files already on disk; imported files with no known language appear under `languages.unknown`. `below_quality` counts retained or newly fetched images that did not meet an explicit floor. Image totals are `null` until the set is resolved. Each face is counted separately.
+- `GET /api/v1/jobs`: lists recent jobs; `?summary=1` omits per-set details and lists `set_codes`. Terminal job states are `completed`, `partial`, and `failed`.
+- `GET /api/v1/sets`: returns the 24-hour Scryfall set catalogue, including release dates, set types, and `parent_set_code` for related token sets. `GET /api/v1/health`: checks the local job worker (`200` or `503`), without contacting Scryfall or requiring a token. Use a job's `updated_at` and progress to check for stalls.
+- `POST /api/v1/jobs/{id}/pause`: parks a queued job immediately or returns `202` while a running job is `pausing`. Poll until `paused`; the downloader stops dispatching work and drains in-flight requests. `POST /api/v1/jobs/{id}/resume` requeues a paused job under the same ID.
+- `POST /api/v1/jobs/{id}/retry` with `{}` submits only the unfinished sets of a terminal `partial` or `failed` download or scan. Workers do not automatically retry a job that finished with permanent gaps.
+- `GET /api/v1/sync-list` shows the saved policy and last/next run. `PUT /api/v1/sync-list` replaces the policy with `sets` (0–100 codes), the job language/quality/refresh fields, `include_tokens` (boolean), `new_releases_days` (1–90 or `null`), and `interval_hours` (1–720 or `null`). `POST /api/v1/sync-list/run` with `{}` queues the saved list and accepts an `Idempotency-Key`.
+- `GET /api/v1/diagnostics` reports local checks and the most recent upstream probe; `GET /api/v1/diagnostics?probe=1` checks Scryfall's card API and its image CDN, reusing a result for up to one minute.
 
 Job history, pause state, progress, and image checksums are stored in `images.sqlite3` under `--data`. After a restart, paused jobs stay paused; interrupted running jobs are requeued automatically. On resume, the active set's counts are rebuilt as its existing files are checked; valid images count as `cached` and are not fetched again. Earlier finished sets are not rerun.
 
 ### Scan, tidy, and refresh
 
 - `{"sets":["msh"],"operation":"scan","min_quality":"large"}` inspects the local Forge keys without changing the library or fetching CDN images. Check `missing`, `unavailable`, `corrupt`, `below_quality`, `legacy`, and sample `issues` per set. Submit a download for that set to repair missing or corrupt images; include a quality floor only when upgrading.
-- `{"sets":["msh"],"operation":"tidy"}` previews confirmed `.fullborder` → `.full` renames. Once the preview is terminal, read every page of `GET /jobs/{id}/renames` via `next_offset`, then send `POST /jobs/{id}/apply` with `{}`. Apply uses only that persisted plan and rechecks each source's checksum and destination; it will not touch a file that appeared or changed after the preview. Tidy preserves bytes and ownership, never overwrites a destination, and leaves conflicts alone. It requires POSIX directory operations and hard links. Stop other writers to these folders before applying.
+- `{"sets":["msh"],"operation":"tidy"}` previews confirmed `.fullborder` → `.full` renames. Once the preview is terminal, read every page of `GET /api/v1/jobs/{id}/renames` via `next_offset`, then send `POST /api/v1/jobs/{id}/apply` with `{}`. Apply uses only that persisted plan and rechecks each source's checksum and destination; it will not touch a file that appeared or changed after the preview. Tidy preserves bytes and ownership, never overwrites a destination, and leaves conflicts alone. It requires POSIX directory operations and hard links. Stop other writers to these folders before applying.
 - Download jobs can opt into `"refresh_language":true` to prefer a higher-ranked language for an image of known provenance, or `"refresh_scan":true` to accept a later `image_updated_at` for the same printing and language. Refreshes must preserve or improve pixel dimensions and cannot replace a PNG with a lossy format. Untracked local images are not assumed to be in any language. These flags use the regular 24-hour metadata cache; they do not force an upstream refresh.
 
 Scryfall metadata is cached for 24 hours per set and language selection. English metadata is included as a naming and coverage reference even when English is not in the requested preference list.
@@ -128,6 +130,9 @@ python3 sync.py --api http://nas.homelab.internal:8765 --include-tokens --wait 1
 python3 sync.py --api http://nas.homelab.internal:8765 --include-tokens --new-releases-days 30 --wait 1800
 ```
 
+`sync.py` adds `/api/v1` to the base URL passed with `--api`. External cron
+scripts that send HTTP requests directly must use `/api/v1/jobs`.
+
 The client processes one set at a time and reports job IDs and terminal
 status. The default idempotency round is today's UTC date; set `--round ID`
 to control it. Repeat the same round and arguments after an uncertain
@@ -154,7 +159,7 @@ For a one-off override, pass `--proxy http://proxy.example:3128`. Both forms use
 
 ```sh
 mkdir -p data
-podman build -t localhost/scryfall-downloader:local .
+podman build --format docker -t localhost/scryfall-downloader:local .
 podman run --rm --stop-timeout 30 --userns=keep-id --user "$(id -u):$(id -g)" \
   -p 127.0.0.1:8765:8765 -v "$PWD/data:/data:Z" \
   -e HTTPS_PROXY -e NO_PROXY \
@@ -164,6 +169,11 @@ podman run --rm --stop-timeout 30 --userns=keep-id --user "$(id -u):$(id -g)" \
 Keep the `/data` mount writable and reuse it across container replacements so the service can resume jobs. With Docker, replace `podman` with `docker` and omit `--userns=keep-id`. Pass lowercase environment names with `-e https_proxy -e no_proxy` if needed. For local Forge metadata, mount `res/editions` read-only and append `--forge-editions /editions` after the image name.
 To opt into WebP or API authentication, pass the corresponding environment
 variable with `-e SCRYFALL_ENABLE_WEBP` or `-e SCRYFALL_API_TOKEN`.
+
+The image uses the default internal port `8765` for its bundled local health
+probe at `/api/v1/health`. When upgrading an existing deployment with a
+custom probe, switch its downloader URL from `/jobs` to `/api/v1/health`
+with the image update; keep any independent Scryfall check.
 
 Before upgrading a library, take a consistent backup of `/data` (including
 the SQLite state) and the mounted pictures. Restore the matching pre-upgrade
