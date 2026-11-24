@@ -2,8 +2,8 @@
 set -euo pipefail
 
 engine=${CONTAINER_ENGINE:-docker}
-port=${SCRYFALL_PORT:-8765}
-container=$("$engine" run -d -e SCRYFALL_PORT -p "127.0.0.1::$port" "$1")
+port=${DEFAULT_PORT:-8765}
+container=$("$engine" run -d -e DEFAULT_PORT -p "127.0.0.1::$port" "$1")
 trap '"$engine" rm -f "$container" >/dev/null' EXIT
 address=$("$engine" port "$container" "$port/tcp")
 

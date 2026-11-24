@@ -29,7 +29,7 @@ def posix_id(value: str) -> int:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bind", default="127.0.0.1", help="HTTP listen address (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, help=f"HTTP port (overrides SCRYFALL_PORT; default: {DEFAULT_PORT})")
+    parser.add_argument("--port", type=int, help=f"HTTP port (overrides DEFAULT_PORT; default: {DEFAULT_PORT})")
     parser.add_argument("--data", type=Path, default=Path(__file__).resolve().parents[1] / "data",
                         help="Output and cache directory (default: data/ at the repository root)")
     parser.add_argument("--forge-editions", type=Path, help="Forge's res/editions directory; overrides automatic edition lookup")

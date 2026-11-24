@@ -46,7 +46,7 @@ python3 -m scryfall_downloader.sync --api https://downloader.example \
 ```
 
 `--api` takes the base URL without `/api/v1`. If omitted, the client connects
-to `127.0.0.1` on [`SCRYFALL_PORT`](#listening-port), or `8765` when unset.
+to `127.0.0.1` on [`DEFAULT_PORT`](#listening-port), or `8765` when unset.
 The client adds the prefix and reads `SCRYFALL_API_TOKEN` when configured.
 Direct HTTP clients submit downloads to `/api/v1/jobs`. Use `--language CODE`
 repeatedly for language priority, and `--min-quality`, `--refresh-language`, or
@@ -69,18 +69,18 @@ docker exec scryfall-downloader python -m scryfall_downloader.sync --include-tok
 
 ## Listening port
 
-Set `SCRYFALL_PORT` to an integer from `1` to `65535`. If unset, the server
+Set `DEFAULT_PORT` to an integer from `1` to `65535`. If unset, the server
 listens on `8765`. On a native launch, `--port` overrides the environment:
 
 ```sh
-SCRYFALL_PORT=18765 python3 -m scryfall_downloader
+DEFAULT_PORT=18765 python3 -m scryfall_downloader
 ```
 
-In a container, pass `-e SCRYFALL_PORT=18765` and publish the matching internal
+In a container, pass `-e DEFAULT_PORT=18765` and publish the matching internal
 port with `-p 127.0.0.1:18765:18765`. Use the environment variable rather than
 `--port` so the bundled health check and `docker exec` sync client use the same
 port. Image metadata still exposes `8765`, so publish the custom port explicitly.
-To change only the host-side port, leave `SCRYFALL_PORT` unset and use
+To change only the host-side port, leave `DEFAULT_PORT` unset and use
 `-p 127.0.0.1:18765:8765`.
 
 ## Network and proxies

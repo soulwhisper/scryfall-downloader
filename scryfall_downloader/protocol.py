@@ -19,11 +19,11 @@ TERMINAL = frozenset({"completed", "partial", "failed"})
 
 def default_port() -> int:
     try:
-        port = int(os.environ.get("SCRYFALL_PORT", DEFAULT_PORT))
+        port = int(os.environ.get("DEFAULT_PORT", DEFAULT_PORT))
     except ValueError:
         port = 0
     if not 1 <= port <= 65535:
-        raise ValueError("SCRYFALL_PORT must be an integer between 1 and 65535")
+        raise ValueError("DEFAULT_PORT must be an integer between 1 and 65535")
     return port
 
 
