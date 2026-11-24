@@ -1,8 +1,9 @@
 # REST API
 
 Use `/api/v1` on the same origin as the Web UI at `/`. Unprefixed API routes
-are not served. If the server has `SCRYFALL_API_TOKEN` set, send
+are not served. If the server has `DOWNLOADER_API_TOKEN` set, send
 `Authorization: Bearer <token>` on all API requests except `GET /api/v1/health`.
+This token authenticates to the downloader, not to Scryfall.
 See [network and proxy setup](operations.md#network-and-proxies) for LAN access.
 
 Send `Content-Type: application/json` with JSON request bodies. Bodies must be
@@ -20,14 +21,14 @@ server has no token):
 ```sh
 api='http://127.0.0.1:8765/api/v1'
 curl -i "$api/jobs" \
-  -H "Authorization: Bearer $SCRYFALL_API_TOKEN" \
+  -H "Authorization: Bearer $DOWNLOADER_API_TOKEN" \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: download-mom-neo-1' \
   -d '{"sets":["mom","neo"],"languages":["zh-CN","en"]}'
 
 # Use the id from the response body, or follow its Location path.
 job_id='paste-id-here'
-curl -H "Authorization: Bearer $SCRYFALL_API_TOKEN" "$api/jobs/$job_id"
+curl -H "Authorization: Bearer $DOWNLOADER_API_TOKEN" "$api/jobs/$job_id"
 ```
 
 `POST /api/v1/jobs` returns `202 Accepted`, a job receipt, and a versioned

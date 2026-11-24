@@ -94,7 +94,8 @@ def local_api(respond):
 
 def run_sync(url, *args):
     stdout, stderr = StringIO(), StringIO()
-    with patch.dict("os.environ", {"SCRYFALL_API_TOKEN": "private-test-token"}), redirect_stdout(stdout), redirect_stderr(stderr):
+    with patch.dict("os.environ", {"DOWNLOADER_API_TOKEN": "private-test-token"}), \
+         redirect_stdout(stdout), redirect_stderr(stderr):
         result = sync.main(["--api", url, "--wait", "4", *args])
     return result, stdout.getvalue(), stderr.getvalue()
 

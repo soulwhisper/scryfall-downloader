@@ -8,7 +8,7 @@ import sqlite3
 
 from .jobs import Jobs
 from .ownership import init_state_owner, preflight, repair_ownership, set_identity
-from .protocol import BEARER_TOKEN, DEFAULT_PORT, default_port
+from .protocol import DEFAULT_PORT, default_port, downloader_api_token
 from .server import Server
 
 
@@ -67,9 +67,7 @@ def main():
         webp = os.environ.get("SCRYFALL_ENABLE_WEBP", "0")
         if webp not in ("0", "1"):
             raise ValueError("SCRYFALL_ENABLE_WEBP must be 0 or 1")
-        token = os.environ.get("SCRYFALL_API_TOKEN")
-        if token is not None and not BEARER_TOKEN.fullmatch(token):
-            raise ValueError("SCRYFALL_API_TOKEN must be a nonempty Bearer token")
+        token = downloader_api_token()
         preflight(root)
         jobs = Jobs(root, args.workers, editions, args.proxy, webp=webp == "1")
         server = Server((args.bind, port), jobs, token)

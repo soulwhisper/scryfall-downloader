@@ -27,6 +27,15 @@ def default_port() -> int:
     return port
 
 
+def downloader_api_token() -> str | None:
+    token = os.environ.get("DOWNLOADER_API_TOKEN")
+    if token is None and "SCRYFALL_API_TOKEN" in os.environ:
+        raise ValueError("SCRYFALL_API_TOKEN was renamed to DOWNLOADER_API_TOKEN")
+    if token is not None and not BEARER_TOKEN.fullmatch(token):
+        raise ValueError("DOWNLOADER_API_TOKEN must be a nonempty Bearer token")
+    return token
+
+
 def normalize_languages(languages) -> list[str]:
     codes = (language.strip().lower().replace("_", "-") for language in languages)
     return list(dict.fromkeys(LANGUAGE_ALIASES.get(code, code) for code in codes))
