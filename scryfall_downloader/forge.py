@@ -167,86 +167,146 @@ def face_names(card: dict) -> list[str]:
     return [card["name"]]
 
 
-def image_sources(prints: dict[str, dict], side: int, languages: list[str],
-                  webp: bool = False) -> tuple[Source, ...]:
+def _image_slot(card: dict, side: int) -> int | None:
+    faces = card.get("card_faces") or []
+    if side < len(faces) and (card["layout"] in TWO_SIDES
+                             or (not card.get("image_uris") and faces[side].get("image_uris"))):
+        return side
+    return None
+
+
+def _printing_sources(card: dict, slot: int | None, webp: bool) -> tuple[Source, ...]:
+    if card.get("image_status") in ("missing", "placeholder"):
+        return ()
+    images = (card if slot is None else card["card_faces"][slot]).get("image_uris") or {}
+    ident = card.get("id")
+    updated = card.get("image_updated_at")
+    try:
+        source_id = str(UUID(ident)) if isinstance(ident, str) else None
+    except ValueError:
+        source_id = None
     sources = []
     seen = set()
-    for lang in languages:
-        card = prints.get(lang)
-        if not card or card.get("image_status") in ("missing", "placeholder"):
+    for version, quality, suffix in FORMATS:
+        if suffix == ".webp" and not webp:
             continue
-        faces = card.get("card_faces") or []
-        if card["layout"] in TWO_SIDES and side < len(faces):
-            images = faces[side].get("image_uris") or {}
-        else:
-            images = card.get("image_uris") or {}
-        ident = card.get("id")
-        updated = card.get("image_updated_at")
-        try:
-            source_id = str(UUID(ident)) if isinstance(ident, str) else None
-        except ValueError:
-            source_id = None
-        for version, quality, suffix in FORMATS:
-            if suffix == ".webp" and not webp:
-                continue
-            if (url := images.get(version)) and url not in seen:
-                seen.add(url)
-                sources.append(Source(lang, quality, suffix, url, source_id, updated if isinstance(updated, str) else None))
+        if (url := images.get(version)) and url not in seen:
+            seen.add(url)
+            sources.append(Source(card["lang"], quality, suffix, url, source_id,
+                                  updated if isinstance(updated, str) else None))
     return tuple(sources)
+
+
+def _unique_sources(groups) -> tuple[Source, ...]:
+    by_url = {}
+    for group in groups:
+        for source in group:
+            by_url.setdefault(source.url, source)
+    return tuple(by_url.values())
+
+
+def image_sources(prints: dict[str, dict], side: int, languages: list[str],
+                  webp: bool = False) -> tuple[Source, ...]:
+    return _unique_sources(_printing_sources(card, _image_slot(card, side), webp)
+                           for lang in languages if (card := prints.get(lang)))
+
+
+def _ordered_slots(prints):
+    return sorted(prints, key=lambda key: (collector_key(key[0]), key[1]))
+
+
+def _art_indexes(representatives):
+    arts = defaultdict(list)
+    for (number, _name), card in representatives.items():
+        arts[face_names(card)[0]].append(number)
+    return {(name, number): str(i) if len(numbers) > 1 else ""
+            for name, numbers in arts.items() for i, number in enumerate(numbers, 1)}
+
+
+def _edition_entry(edition, number, full_name, first_name, flavor, *, archive):
+    if not edition:
+        return None
+    rows = edition.cards.get(number, ())
+    if archive and flavor:
+        # A flavor-name row is stronger evidence than the shared Oracle name.
+        for row in rows:
+            if row.flavor_name == flavor:
+                return row
+    for row in rows:
+        if row.name in (full_name, first_name) or (row.flavor_name and row.flavor_name == flavor):
+            return row
+    return None
+
+
+def _forge_keys(code, card, edition, indexes, *, archive=False):
+    number = card["collector_number"]
+    names = face_names(card)
+    layout = card["layout"]
+    token_set = card["set_type"] == "token"
+    faces = card.get("card_faces") or []
+    entry = _edition_entry(edition, number, card["name"], names[0], card.get("flavor_name"), archive=archive)
+    art = entry.art_suffix if entry else indexes.get((names[0], number), "")
+    folder = edition.folder if edition else code.upper()
+    for side, name in enumerate(names):
+        face_layout = faces[side].get("layout", layout) if layout == "reversible_card" and faces else layout
+        if token_set or face_layout in TOKEN_LAYOUTS:
+            token_number = number if side == 0 else number + "☇"
+            slugs = edition.tokens.get(token_number) if edition else None
+            if slugs:
+                stem = f"pics/tokens/{edition.code}/{filename(token_number)}_{filename(slugs[0])}"
+            else:
+                stem = f"pics/tokens/{code.upper()}/{filename(token_number)}_{filename(name).replace(' ', '_')}"
+            yield side, name, stem, bool(slugs), False
+        else:
+            if side == 0 and layout != "split":
+                if entry:
+                    name = entry.flavor_name or (f"{entry.name} {entry.variant}" if entry.variant else entry.name)
+                else:
+                    name = card.get("flavor_name") or name
+                if (layout in TWO_SIDES or layout in ("adventure", "prepare")) and " // " in name:
+                    name = names[0]
+            infix = "" if face_layout == "planar" else ".full"
+            stem = f"pics/cards/{folder}/{filename(name)}{art}{infix}"
+            yield side, name, stem, entry is not None, entry is not None and bool(infix)
+
+
+def _special_priority(card):
+    lang = card["lang"]
+    if lang == "ph":
+        return 0
+    if lang == "ja" and "jpwalker" in (card.get("promo_types") or ()):
+        return 1
+    return 2
+
+
+def _candidate_rank(card, language_rank):
+    lang = card["lang"]
+    return _special_priority(card), language_rank.get(lang, len(language_rank)), lang, card.get("id") or ""
 
 
 def plan_images(code: str, cards: list[dict], edition: Edition | None,
                 languages: list[str], webp: bool = False) -> tuple[list[Asset], int, int]:
-    prints = defaultdict(dict)
+    prints = defaultdict(list)
     for card in cards:
-        prints[card["collector_number"], card["name"]][card["lang"]] = card
-    ordered = sorted(prints.items(), key=lambda item: (collector_key(item[0][0]), item[0][1]))
-    arts = defaultdict(list)
-    for (number, _name), langs in ordered:
-        card = langs.get("en") or next(iter(langs.values()))
-        arts[face_names(card)[0]].append(number)
-    indexes = {(name, number): str(i) if len(numbers) > 1 else ""
-               for name, numbers in arts.items() for i, number in enumerate(numbers, 1)}
-
-    folder = edition.folder if edition else code.upper()
-    preferred = tuple(languages)
+        prints[card["collector_number"], card["name"]].append(card)
+    ordered = _ordered_slots(prints)
+    representatives = {}
+    for slot in ordered:
+        variants = prints[slot]
+        by_lang = {card["lang"]: card for card in variants}
+        representatives[slot] = by_lang.get("en", next(iter(by_lang.values())))
+    indexes = _art_indexes(representatives)
+    language_rank = {lang: i for i, lang in enumerate(dict.fromkeys(languages))}
     desired = []
-    for (number, full_name), langs in ordered:
-        card = langs.get("en") or next(iter(langs.values()))
-        names = face_names(card)
-        layout = card["layout"]
-        token_set = card["set_type"] == "token"
-        faces = card.get("card_faces") or []
-        entry = None
-        if edition:
-            for row in edition.cards.get(number, ()):
-                if row.name in (full_name, names[0]) or (row.flavor_name and row.flavor_name == card.get("flavor_name")):
-                    entry = row
-                    break
-        art = entry.art_suffix if entry else indexes[names[0], number]
-        for side, name in enumerate(names):
-            face_layout = faces[side].get("layout", layout) if layout == "reversible_card" and faces else layout
-            legacy = False
-            if token_set or face_layout in TOKEN_LAYOUTS:
-                token_number = number if side == 0 else number + "☇"
-                slugs = edition.tokens.get(token_number) if edition else None
-                found = bool(slugs)
-                if slugs:
-                    stem = f"pics/tokens/{edition.code}/{filename(token_number)}_{filename(slugs[0])}"
-                else:
-                    stem = f"pics/tokens/{code.upper()}/{filename(token_number)}_{filename(name).replace(' ', '_')}"
-            else:
-                found = entry is not None
-                if side == 0 and layout != "split":
-                    name = ((entry.flavor_name or (entry.name + ' ' + entry.variant if entry.variant else entry.name))
-                            if entry else card.get("flavor_name") or name)
-                    if (layout in TWO_SIDES or layout in ("adventure", "prepare")) and " // " in name:
-                        name = names[0]
-                infix = "" if face_layout == "planar" else ".full"
-                stem = f"pics/cards/{folder}/{filename(name)}{art}{infix}"
-                legacy = found and infix == ".full"
-            sources = image_sources(langs, side, languages, webp)
-            desired.append((not found, number, name, side, Asset(stem, sources, legacy, preferred)))
+    for slot, card in representatives.items():
+        variants = sorted((candidate for candidate in prints[slot] if candidate["lang"] in language_rank),
+                          key=lambda candidate: _candidate_rank(candidate, language_rank))
+        promoted = (candidate["lang"] for candidate in variants if _special_priority(candidate) < 2)
+        preferred = tuple(dict.fromkeys((*promoted, *language_rank)))
+        for side, name, stem, found, legacy in _forge_keys(code, card, edition, indexes):
+            sources = _unique_sources(_printing_sources(candidate, _image_slot(candidate, side), webp)
+                                      for candidate in variants)
+            desired.append((not found, slot[0], name, side, Asset(stem, sources, legacy, preferred)))
 
     assets = []
     occupied = set()
@@ -257,7 +317,78 @@ def plan_images(code: str, cards: list[dict], edition: Edition | None,
         if key in occupied:
             collisions += 1
             stem = f"extras/{code.upper()}/{filename(number)}_{filename(name)}_{side + 1}_{collisions}"
-            asset = Asset(stem, asset.sources, languages=preferred)
+            asset = Asset(stem, asset.sources, languages=asset.languages)
         occupied.add(asset.stem.casefold())
         assets.append(asset)
     return assets, len(prints), collisions
+
+
+def _path_segment(value: str) -> str:
+    # Percent-encode unknown codes without turning them into path separators,
+    # traversal components, or ambiguous aliases of a known language.
+    return quote(value, safe="").replace(".", "%2E") or "%empty"
+
+
+def _archive_id(value: str) -> str:
+    try:
+        return str(UUID(value))
+    except ValueError:
+        return hashlib.sha256(value.encode()).hexdigest()
+
+
+def plan_archive(code: str, cards: list[dict], edition: Edition | None,
+                 languages: list[str], webp: bool = False) -> tuple[list[Asset], list[Asset], int, int]:
+    """Return (UUID/face originals, Forge projection, distinct UUID count, Forge collisions)."""
+    unique = {}
+    for card in cards:
+        unique.setdefault(_archive_id(card["id"]), card)
+    prints = defaultdict(list)
+    for ident, card in unique.items():
+        prints[card["collector_number"], card["name"]].append((ident, card))
+    language_rank = {lang: i for i, lang in enumerate(dict.fromkeys(languages))}
+    code = _path_segment(code.upper())
+    ordered = _ordered_slots(prints)
+    representatives = {}
+    for slot in ordered:
+        prints[slot].sort(key=lambda item: _candidate_rank(item[1], language_rank))
+        representatives[slot] = next((card for _, card in prints[slot] if card["lang"] == "en"), prints[slot][0][1])
+    indexes = _art_indexes(representatives)
+    originals = []
+    forge_slots = defaultdict(list)
+    for number, name in ordered:
+        for ident, card in prints[number, name]:
+            lang = card["lang"]
+            stem = f"pics/printings/{code}/{_path_segment(lang)}/{filename(number)}_{ident}"
+            faces = card.get("card_faces") or []
+            keys = tuple(_forge_keys(code, card, edition, indexes, archive=True))
+            face_slots = [i for i, face in enumerate(faces) if card["layout"] in TWO_SIDES or face.get("image_uris")]
+            slots = {slot: _printing_sources(card, slot, webp) for slot in face_slots}
+            if not slots or card.get("image_uris") or any(_image_slot(card, side) is None for side, *_ in keys):
+                slots[None] = _printing_sources(card, None, webp)
+            for slot, sources in slots.items():
+                suffix = "" if slot is None else f"_{slot + 1}"
+                originals.append(Asset(stem + suffix, sources, languages=(lang,)))
+            rank = _candidate_rank(card, language_rank)
+            for side, _, key, found, legacy in keys:
+                image_slot = _image_slot(card, side)
+                forge_slots[number, name, side, key, found, legacy].append((rank, lang, ident, slots[image_slot]))
+
+    desired = []
+    for (number, name, side, stem, found, legacy), candidates in forge_slots.items():
+        rank, _, ident, _ = next((candidate for candidate in candidates if candidate[3]), candidates[0])
+        preferred = tuple(dict.fromkeys(lang for _, lang, _, _ in candidates))
+        sources = _unique_sources(sources for _, _, _, sources in candidates)
+        desired.append((not found, not sources, rank[:2], collector_key(number), name, side, ident,
+                        Asset(stem, sources, legacy, preferred)))
+
+    forge_assets = []
+    occupied = set()
+    collisions = 0
+    for *_, side, ident, asset in sorted(desired, key=lambda item: item[:-1]):
+        key = asset.stem.casefold()
+        if key in occupied:
+            collisions += 1
+            asset = Asset(f"extras/{code}/{ident}_{side + 1}", asset.sources, languages=asset.languages)
+        occupied.add(asset.stem.casefold())
+        forge_assets.append(asset)
+    return originals, forge_assets, len(unique), collisions

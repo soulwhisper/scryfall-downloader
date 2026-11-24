@@ -10,6 +10,9 @@ Paths are relative to the data directory (`--data`):
 - `pics/tokens/<SET_CODE>/` holds tokens. When Forge defines the token, the
   folder uses its edition `Code` (not `Code2`) and the file uses its token
   name. Otherwise, the folder uses the uppercase Scryfall code.
+- `pics/printings/<SET_CODE>/<LANG>/<COLLECTOR>_<UUID>[_<FACE>].<EXT>`
+  holds the best available source for each printing and face in a full archive.
+  Forge does not read this directory.
 - `extras/<SET_CODE>/` holds printings whose filenames would collide with a
   Forge key, rather than overwriting another printing.
 
@@ -31,6 +34,31 @@ Forge's cache at `pics/tokens/`. Prefer a separate card image directory:
 Forge's local lookup order is JPG → PNG → WebP, so an existing JPEG with the
 same stem can take precedence over a PNG. Use separate data directories for
 independent language collections.
+
+## Full catalogue archive
+
+Use **Library operations → Run full archive** or enable the
+[first-start job](operations.md#first-start-archive). This streams Scryfall's
+[All Cards export](https://scryfall.com/docs/api/bulk-data) into an on-disk
+index. The job includes every set represented in that export, ordered
+newest first by the earliest dated printing in each set. Set type, format
+legality, paper/digital status, and language do not exclude a printing.
+Unreleased entries with real art are included too. Missing scans and
+placeholders are reported as unavailable.
+
+For each Forge key, prefer Phyrexian (`ph`), then Japanese alternate-art
+planeswalkers (`ja` with Scryfall's `jpwalker` tag), then Simplified Chinese
+(`zhs`), English (`en`), and other available languages. Ordinary Japanese
+does not receive special priority. Different Forge art slots remain
+distinct: e.g. `WAR #97★` is not a rename of `WAR #97`. Distinct UUIDs
+and faces are archived even if their Forge keys collide. Finishes
+on a single Scryfall printing do not imply separate image files.
+
+Forge copies reuse verified archive bytes when available. The copies and
+originals are independent files so editing one tree does not corrupt the
+other. A second archive run validates and reuses intact local files rather
+than replacing valid copies. Per-set download requests still respect the
+languages explicitly selected.
 
 ## Scan and repair
 

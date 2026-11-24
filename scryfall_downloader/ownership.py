@@ -1,9 +1,10 @@
-"""POSIX service identity and offline ownership repair for the Forge image tree."""
+"""Service identity, writable storage preflight, and offline ownership repair."""
 
 from contextlib import closing
 import os
 from pathlib import Path
 import stat
+from tempfile import TemporaryDirectory
 
 from .imagefiles import IMAGE_SUFFIXES
 
@@ -18,6 +19,37 @@ def set_identity(uid: int, gid: int):
     os.setgroups([])
     os.setgid(gid)
     os.setuid(uid)
+
+
+def init_state_owner(root: Path, uid: int, gid: int):
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        raise ValueError("--init-state-owner requires a root launcher")
+    root.mkdir(parents=True, exist_ok=True)
+    info = root.lstat()
+    if not stat.S_ISDIR(info.st_mode):
+        raise ValueError(f"Expected a real state directory: {root}")
+    if (info.st_uid, info.st_gid) != (uid, gid):
+        os.chown(root, uid, gid, follow_symlinks=False)
+
+
+def preflight(root: Path):
+    """Test create, chmod, replace, read and removal as the serving identity."""
+    pics, cache = root / "pics", root / "cache"
+    root.mkdir(parents=True, exist_ok=True)
+    for path in (root, cache, cache / "scryfall", cache / "forge", root / "extras",
+                 pics, pics / "cards", pics / "tokens", pics / "printings"):
+        try:
+            path.mkdir(exist_ok=True)
+            if not stat.S_ISDIR(path.lstat().st_mode):
+                raise NotADirectoryError("expected a real directory")
+            with TemporaryDirectory(prefix=".scryfall-check-", dir=path) as scratch:
+                probe = Path(scratch) / "probe"
+                probe.write_bytes(b"ok")
+                probe.chmod(0o644)
+                if probe.replace(probe.with_name("published")).read_bytes() != b"ok":
+                    raise OSError("could not read back the published file")
+        except OSError as exc:
+            raise OSError(f"Storage preflight: {path}: {exc}") from exc
 
 
 def repair_ownership(root: Path, uid: int, gid: int, *, dry_run: bool) -> tuple[int, int]:
@@ -39,7 +71,7 @@ def repair_ownership(root: Path, uid: int, gid: int, *, dry_run: bool) -> tuple[
         with closing(os.fwalk(top, follow_symlinks=False, onerror=fail)) as walk:
             for path, dirs, files, directory in walk:
                 if top.name == "pics" and path == str(top):
-                    dirs[:] = [name for name in dirs if name in ("cards", "tokens")]
+                    dirs[:] = [name for name in dirs if name in ("cards", "tokens", "printings")]
                     files = []
                 info = os.fstat(directory)
                 if (info.st_uid, info.st_gid) != (uid, gid):

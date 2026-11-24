@@ -12,12 +12,30 @@ Open `/` on the downloader's origin. The console uses JavaScript; the
 - **Library operations:** Download, repair, upgrade, or scan selected sets
   without changing the saved list. See the [library guide](library.md) for
   integrity checks and [approving legacy renames](library.md#legacy-filename-approvals).
+  **Run full archive** keeps all available printings and creates Forge-named
+  copies; it does not use or change the saved list.
 - **Jobs:** Open a receipt to follow progress and review per-set findings.
   [Pause or resume jobs and retry unfinished sets](api.md#job-controls).
 - **Diagnostics:** Check the worker and scheduler, process UID/GID, the WebP
   setting, and directory permissions (not a write test). **Check Scryfall &
   CDN** runs the [upstream probe](api.md#health-and-diagnostics). Change proxy,
   UID/GID, WebP, and ownership settings on the host, not in the console.
+
+## First-start archive
+
+Use `--archive-all` to queue the [full catalogue archive](library.md#full-catalogue-archive)
+once for a new `--data` directory. It runs in the same downloader process
+and needs neither cron nor a browser. The startup marker and job survive
+restarts. Interrupted work resumes; an explicitly paused job stays paused.
+Other queued jobs may run between archive sets.
+
+The first metadata download and complete image collection can take
+substantial time and disk space. Keep `cache/scryfall/` writable for an
+on-disk index and its replacement. Review the **Full archive** job under
+**Jobs**; if it reports a failed import, use **Retry unfinished sets**.
+To include newer printings after the first run, start another archive
+from the console or `POST /api/v1/archive/run`. The bulk cache lasts 24 hours.
+Use a staging data directory if you keep a separate Forge library.
 
 ## Built-in schedule
 
@@ -129,14 +147,25 @@ Pass lowercase names with `-e https_proxy -e no_proxy` if needed. To opt into
 [WebP](library.md#webp-opt-in) or authentication, pass `-e SCRYFALL_ENABLE_WEBP`
 or `-e SCRYFALL_API_TOKEN`. Preserve the writable `/data` mount across
 replacements so the service can resume jobs. The bundled health check uses
-`/api/v1/health` on the [configured internal port](#listening-port).
+`/api/v1/health` on the [configured internal port](#listening-port). Set
+`SCRYFALL_HEALTH_UPSTREAM=1` to probe Scryfall's bulk metadata API as well,
+using `HTTPS_PROXY`/`NO_PROXY` from the container environment. Do not
+restart the service merely because the independent upstream check fails.
 
 On POSIX the server uses the launching UID/GID (image default: `10001:10001`).
 Use `--user UID:GID` for a container or pass both `--uid` and `--gid` to the
 server. If started as root with these flags, it drops privileges before
-opening SQLite or starting HTTP. Ensure the chosen identity can write to the
-state and image directories. New images are mode `0644`; state modes do not
-change.
+opening SQLite or starting HTTP. On startup it tests file creation, mode
+changes, replacement, readback and cleanup in the state, cache and image
+directories as the serving identity. New images are mode `0644`.
+
+If a fresh **named state volume** is root-owned, a root launcher can pass
+`--init-state-owner --uid <uid> --gid <gid>` to change only the data root's
+owner before dropping privileges. With all container capabilities dropped,
+that launcher needs `CHOWN`, `SETUID` and `SETGID` restored. This option
+does not recurse into state or change ownership on a separate pictures
+mount. Ensure any existing state files and the picture mount are already
+writable by the selected identity.
 
 To fix older image ownership, stop the server and preview on the same data
 directory or mounts:
@@ -147,9 +176,9 @@ sudo python3 -m scryfall_downloader --data "$PWD/data" \
 ```
 
 Remove `--dry-run` to apply. The command runs offline, only adjusting
-mismatched ownership in `pics/cards`, `pics/tokens`, their parent `pics`, and
-`extras`. It does not follow symlinks or change hard-linked images, non-image
-files, permission bits, names, or SQLite ownership.
+mismatched ownership in `pics/cards`, `pics/tokens`, `pics/printings`, their
+parent `pics`, and `extras`. It does not follow symlinks or change hard-linked
+images, non-image files, permission bits, names, or SQLite ownership.
 
 ## Packaging, tests and releases
 
@@ -194,10 +223,9 @@ local image tag in the run command.
 
 Before upgrading, stop writes and take a consistent backup of the data
 directory (including SQLite state) and any separately mounted pictures.
-When updating an old deployment, switch any custom local downloader probe
-from `/jobs` to `/api/v1/health` with the image update. Keep independent
-Scryfall checks. Open the Web UI and check the versioned health endpoint
-before resuming scheduled work.
+Use the bundled health command instead of a deployment-specific probe;
+it checks the versioned endpoint and can check upstream separately. Open
+the Web UI and check health before resuming scheduled work.
 
 To downgrade, restore the matching pre-upgrade state and pictures before
 starting the previous image. Version v0.2.0 cannot write the newer database

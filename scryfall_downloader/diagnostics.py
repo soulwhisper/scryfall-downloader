@@ -23,7 +23,8 @@ class Diagnostics:
         jobs = self.jobs
         paths = []
         for label, path in (("State", jobs.root), ("Pictures", jobs.root / "pics"),
-                            ("Cards", jobs.root / "pics" / "cards"), ("Tokens", jobs.root / "pics" / "tokens")):
+                            ("Cards", jobs.root / "pics" / "cards"), ("Tokens", jobs.root / "pics" / "tokens"),
+                            ("Printings", jobs.root / "pics" / "printings")):
             if path.is_symlink():
                 status, detail = "not_writable", "Symbolic links are not used as image directories"
             elif not path.exists():

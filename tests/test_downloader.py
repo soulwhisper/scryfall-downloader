@@ -1,4 +1,5 @@
 from contextlib import closing, contextmanager
+from gzip import compress
 import hashlib
 from http.client import HTTPConnection
 from io import BytesIO
@@ -12,6 +13,7 @@ import threading
 import time
 import unittest
 from urllib.parse import parse_qs, urlsplit
+from uuid import UUID
 import zlib
 
 from scryfall_downloader.jobs import Jobs
@@ -73,6 +75,25 @@ class Upstream:
         return body(self.image_requests.count(scan)) if callable(body) else Response(body)
 
 
+class CatalogueUpstream(Upstream):
+    data_url = "https://data.scryfall.io/fixture.jsonl.gz"
+
+    def __init__(self, cards, scans):
+        super().__init__(cards, scans)
+        self.blob = compress(b"\n".join(json.dumps(card).encode() for card in cards))
+        self.bulk_requests = []
+
+    def open(self, url, host, accept):
+        if url == "https://api.scryfall.com/bulk-data/all-cards":
+            self.bulk_requests.append(host)
+            return Response(json.dumps({"type": "all_cards", "jsonl_download_uri": self.data_url,
+                                        "compressed_size": len(self.blob)}).encode())
+        if url == self.data_url:
+            self.bulk_requests.append(host)
+            return Response(self.blob)
+        return super().open(url, host, accept)
+
+
 class DownloaderTest(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -82,14 +103,14 @@ class DownloaderTest(unittest.TestCase):
         self.editions.mkdir()
 
     @contextmanager
-    def server(self, upstream, rows, *, token=None):
+    def server(self, upstream, rows, *, token=None, archive_all=False):
         (self.editions / "Test.txt").write_text("[metadata]\nCode=TST\nCode2=FT\n[cards]\n" + rows,
                                                encoding="utf-8")
         jobs = Jobs(self.root, 1, self.editions, None)
         jobs.web.open = upstream.open
         with Server(("127.0.0.1", 0), jobs, token) as server:
             thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
-            jobs.start()
+            jobs.start(archive_all=archive_all)
             thread.start()
             try:
                 yield server.server_port
@@ -279,6 +300,89 @@ class DownloaderTest(unittest.TestCase):
             self.assertEqual(job["started_at"], paused["started_at"])
             self.assertEqual((job["sets"]["tst"]["downloaded"], job["sets"]["tst"]["cached"]), (2, 1))
             self.assertEqual(upstream.image_requests, ["1.png", "2.png", "2.png", "3.png"])
+
+    def test_archive_bootstrap_resume_and_reuses_printings_for_forge(self):
+        entered, release = threading.Event(), threading.Event()
+        ph = pixel_png(60)
+        common = pixel_png(10)
+
+        def last_printing(attempt):
+            if attempt == 1:
+                entered.set()
+                if not release.wait(6):
+                    raise AssertionError("Test did not release the in-flight request")
+            return Response(common)
+
+        cards = []
+        for k, code, kind, released, lang, name, scan in (
+            (1, "tst", "expansion", "2026-07-01", "en", "Oak", "en.png"),
+            (2, "tst", "expansion", "2026-07-01", "zhs", "Oak", "zh.png"),
+            (3, "tst", "expansion", "2026-07-01", "ph", "Oak", "ph.png"),
+            (4, "tok", "token", "2026-11-01", "en", "Mite", "token.png"),
+            (5, "ydg", "alchemy", "2001-01-01", "qya", "Owl", "digital.png"),
+            (6, "drf", "draft_innovation", "2000-05-01", "zht", "Pine", "draft.png"),
+        ):
+            cards.append(dict(printing(1, lang, name, scan), object="card", id=str(UUID(int=k)), set=code,
+                              set_type=kind, released_at=released, set_name=code))
+        upstream = CatalogueUpstream(cards, {"token.png": common, "en.png": common, "zh.png": common,
+                                             "ph.png": ph, "digital.png": common, "draft.png": last_printing})
+        rows = "1 C Oak\n"
+        with self.server(upstream, rows, archive_all=True) as port:
+            try:
+                self.assertTrue(entered.wait(5))
+                job, = self.api(port, "GET", "/jobs?summary=1")["jobs"]
+                self.assertEqual(job["set_codes"], ["tok", "tst", "ydg", "drf"])
+                self.assertEqual(job["sets_finished"], 3)
+                self.assertEqual(job["source"], "archive_bootstrap")
+                path = f"/jobs/{job['id']}"
+                self.api(port, "POST", "/archive/run", {}, expect=409)
+                self.api(port, "POST", path + "/pause", expect=202)
+            finally:
+                release.set()
+            paused = self.wait_for(port, path, "paused")
+
+        with self.server(upstream, rows, archive_all=True) as port:
+            self.assertEqual(self.api(port, "GET", path), paused)
+            self.api(port, "POST", path + "/resume", expect=202)
+            completed = self.wait_for(port, path, "completed")
+            self.assertEqual(completed["sets"]["tst"]["total_images"], 4)
+            pics = self.root / "pics"
+            self.assertEqual((pics / "cards/FT/Oak.full.png").read_bytes(), ph)
+            self.assertEqual((pics / "tokens/TOK/1_Mite.png").read_bytes(), common)
+            for card in cards:
+                original = pics / "printings" / card["set"].upper() / card["lang"] / f"1_{card['id']}.png"
+                self.assertEqual(original.read_bytes(), ph if card["lang"] == "ph" else common)
+            self.assertEqual(upstream.bulk_requests, ["api.scryfall.com", "data.scryfall.io"])
+            self.assertEqual(upstream.image_requests, ["token.png", "ph.png", "zh.png", "en.png",
+                                                        "digital.png", "draft.png", "draft.png"])
+
+            damaged = pics / f"printings/TST/en/1_{cards[0]['id']}.png"
+            damaged.write_bytes(ph)
+            headers = {"Idempotency-Key": "rescan"}
+            refresh = self.api(port, "POST", "/archive/run", {}, expect=202, headers=headers)
+            repaired = self.wait_for(port, f"/jobs/{refresh['id']}", "completed")
+            self.assertEqual(damaged.read_bytes(), common)
+            self.assertEqual(upstream.image_requests[-1], "en.png")
+            self.assertEqual(len(upstream.image_requests), 8)
+            self.assertEqual(self.api(port, "POST", "/archive/run", {}, expect=202, headers=headers), repaired)
+
+        with self.server(upstream, rows, archive_all=True) as port:
+            self.assertEqual(len(self.api(port, "GET", "/jobs?summary=1")["jobs"]), 2)
+
+    def test_failed_archive_import_has_a_retryable_receipt(self):
+        card = dict(printing(1, "en", "Oak", "en.png"), object="card", id=str(UUID(int=1)))
+        upstream = CatalogueUpstream([card], {"en.png": pixel_png(12)})
+        blob, upstream.blob = upstream.blob, upstream.blob[:-3]
+        with self.server(upstream, "1 C Oak\n") as port:
+            job = self.api(port, "POST", "/archive/run", {}, expect=202)
+            path = f"/jobs/{job['id']}"
+            failed = self.wait_for(port, path, "failed")
+            self.assertIn("bulk index", failed["error"])
+            self.assertEqual(failed["sets"], {})
+            upstream.blob = blob
+            retry = self.api(port, "POST", path + "/retry", {}, expect=202)
+            result = self.wait_for(port, f"/jobs/{retry['id']}", "completed")
+            self.assertEqual(list(result["sets"]), ["tst"])
 
     def test_authenticated_idempotent_submission_survives_restart(self):
         upstream = Upstream([printing(1, "en", "Oak", "oak.png")], {"oak.png": pixel_png(80)})

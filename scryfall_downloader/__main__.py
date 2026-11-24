@@ -7,7 +7,7 @@ import signal
 import sqlite3
 
 from .jobs import Jobs
-from .ownership import repair_ownership, set_identity
+from .ownership import init_state_owner, preflight, repair_ownership, set_identity
 from .protocol import BEARER_TOKEN, DEFAULT_PORT, default_port
 from .server import Server
 
@@ -37,6 +37,9 @@ def main():
     parser.add_argument("--proxy", help="Outbound HTTP CONNECT proxy URL (default: use HTTPS_PROXY)")
     parser.add_argument("--uid", type=posix_id, help="Service UID or target UID for ownership repair")
     parser.add_argument("--gid", type=posix_id, help="Service GID or target GID for ownership repair")
+    parser.add_argument("--init-state-owner", action="store_true",
+                        help="Root launcher: chown only the data directory itself before dropping privileges")
+    parser.add_argument("--archive-all", action="store_true", help="Queue one full archive on first start with this data directory")
     parser.add_argument("--repair-ownership", action="store_true", help="Repair image ownership offline, then exit")
     parser.add_argument("--dry-run", action="store_true", help="Preview --repair-ownership without changes")
     args = parser.parse_args()
@@ -46,6 +49,8 @@ def main():
         parser.error("--uid and --gid must be provided together; both are required for ownership repair")
     if args.dry_run and not args.repair_ownership:
         parser.error("--dry-run requires --repair-ownership")
+    if args.init_state_owner and (args.uid in (None, 0) or args.repair_ownership):
+        parser.error("--init-state-owner requires --uid with a non-root UID and --gid for serving")
     try:
         root = args.data.expanduser().resolve()
         if args.repair_ownership:
@@ -54,6 +59,8 @@ def main():
             print(f"{action} ownership on {changed} entries; skipped {skipped} links or non-regular images")
             return
         port = args.port if args.port is not None else default_port()
+        if args.init_state_owner:
+            init_state_owner(root, args.uid, args.gid)
         if args.uid is not None:
             set_identity(args.uid, args.gid)
         editions = args.forge_editions.expanduser().resolve() if args.forge_editions else None
@@ -63,13 +70,14 @@ def main():
         token = os.environ.get("SCRYFALL_API_TOKEN")
         if token is not None and not BEARER_TOKEN.fullmatch(token):
             raise ValueError("SCRYFALL_API_TOKEN must be a nonempty Bearer token")
+        preflight(root)
         jobs = Jobs(root, args.workers, editions, args.proxy, webp=webp == "1")
         server = Server((args.bind, port), jobs, token)
     except (OSError, ValueError, sqlite3.Error) as exc:
         parser.exit(1, f"Error: {exc}\n")
     signal.signal(signal.SIGTERM, interrupt)
     with server:
-        jobs.start()
+        jobs.start(archive_all=args.archive_all)
         try:
             print(f"Listening on http://{args.bind}:{server.server_port}; data: {jobs.root}", flush=True)
             server.serve_forever()

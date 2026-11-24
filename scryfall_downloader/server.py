@@ -123,8 +123,11 @@ class API(BaseHTTPRequestHandler):
             return self.respond(404, {"error": "Not found"})
         jobs = self.server.jobs
         if path == "/health":
-            alive = jobs.worker.is_alive() and not jobs.stopping
-            return self.respond(200 if alive else 503, {"status": "ok" if alive else "worker_unavailable"})
+            if not jobs.worker.is_alive() or jobs.stopping:
+                return self.respond(503, {"status": "worker_unavailable"})
+            if not jobs.sync_list.thread.is_alive():
+                return self.respond(503, {"status": "scheduler_unavailable"})
+            return self.respond(200, {"status": "ok"})
         if not self.authorized():
             return
         try:
@@ -206,7 +209,8 @@ class API(BaseHTTPRequestHandler):
                     return self.respond(404, {"error": "Not found"})
                 return self.respond(200 if job["status"] == "paused" else 202, job)
             saving = path == "/sync-list" and not post
-            if not (saving or (post and path in ("/jobs", "/sync-list/run")) or action in ("apply", "retry")):
+            if not (saving or (post and path in ("/jobs", "/sync-list/run", "/archive/run"))
+                    or action in ("apply", "retry")):
                 return self.respond(404, {"error": "Not found"})
             if self.headers.get_content_type() != "application/json":
                 return self.respond(415, {"error": "Content-Type must be application/json"})
@@ -244,6 +248,8 @@ class API(BaseHTTPRequestHandler):
                     job = jobs.apply_tidy(parts[2])
                 elif action == "retry":
                     job = jobs.retry(parts[2], key)
+                elif path == "/archive/run":
+                    job = jobs.submit_archive(key)
                 else:
                     job = jobs.sync_list.run(key)
         except ValueError as exc:

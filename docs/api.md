@@ -69,6 +69,20 @@ After a restart, interrupted running jobs requeue and paused jobs stay paused.
 On resumption, counts for the active set rebuild as valid files are reused;
 finished sets are not rerun.
 
+## Full catalogue archive
+
+`POST /api/v1/archive/run` accepts `{}` and an optional `Idempotency-Key`.
+It returns `202` and a usual job receipt (`archive: true`) with a
+versioned `Location`. It does not edit or run the saved sync list.
+An existing active or paused archive conflicts with a new one (`409`).
+
+The set list is empty while the Scryfall bulk index is being prepared.
+An import failure is reported in `error` on the job receipt; retrying
+before any sets were resolved reruns the import. After resolution the
+usual set-level progress and pause/resume controls apply. Image counters
+cover both the originals and the Forge copies. See
+[archive scope and image priority](library.md#full-catalogue-archive).
+
 ## Job controls
 
 - `POST /api/v1/jobs/{id}/pause` needs no body. It parks a queued job with
@@ -118,9 +132,9 @@ limits](https://scryfall.com/docs/api/rate-limits).
 
 ## Health and diagnostics
 
-- `GET /api/v1/health` is unauthenticated and checks only the local job
-  worker: `200` with `{"status":"ok"}`, or `503` with
-  `{"status":"worker_unavailable"}`. It does not contact Scryfall.
+- `GET /api/v1/health` is unauthenticated and checks the local worker and
+  scheduler. It returns `200` with `{"status":"ok"}` or `503` with
+  `worker_unavailable` or `scheduler_unavailable`. It does not contact Scryfall.
 - `GET /api/v1/diagnostics` returns worker and scheduler status, effective
   `uid` and `gid`, path permissions, the `webp` gate, and `probe` (the most
   recent upstream sample, or `null`). With `?probe=1`, it checks Scryfall's
