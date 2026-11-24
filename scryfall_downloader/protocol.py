@@ -1,5 +1,6 @@
 """Values shared by the REST server, sync client, and health probe."""
 
+import os
 import re
 
 
@@ -14,6 +15,16 @@ LANGUAGE_ALIASES = {
     "zh-tw": "zht", "zhtw": "zht", "zh-hant": "zht",
 }
 TERMINAL = frozenset({"completed", "partial", "failed"})
+
+
+def default_port() -> int:
+    try:
+        port = int(os.environ.get("SCRYFALL_PORT", DEFAULT_PORT))
+    except ValueError:
+        port = 0
+    if not 1 <= port <= 65535:
+        raise ValueError("SCRYFALL_PORT must be an integer between 1 and 65535")
+    return port
 
 
 def normalize_languages(languages) -> list[str]:

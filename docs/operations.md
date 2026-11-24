@@ -45,11 +45,11 @@ python3 -m scryfall_downloader.sync --api https://downloader.example \
   --include-tokens --new-releases-days 30 --wait 1800
 ```
 
-`--api` takes the base URL without `/api/v1` and defaults to
-`http://127.0.0.1:8765`. The client adds the prefix and reads
-`SCRYFALL_API_TOKEN` when configured. Scripts that make HTTP calls directly
-must use `/api/v1/jobs` to submit downloads. Use `--language CODE` repeatedly
-for language priority, and `--min-quality`, `--refresh-language`, or
+`--api` takes the base URL without `/api/v1`. If omitted, the client connects
+to `127.0.0.1` on [`SCRYFALL_PORT`](#listening-port), or `8765` when unset.
+The client adds the prefix and reads `SCRYFALL_API_TOKEN` when configured.
+Direct HTTP clients submit downloads to `/api/v1/jobs`. Use `--language CODE`
+repeatedly for language priority, and `--min-quality`, `--refresh-language`, or
 `--refresh-scan` for an explicit [image policy](library.md#quality-and-refresh).
 
 The client processes one set at a time and reports job IDs and status.
@@ -66,6 +66,22 @@ REST port, using the container's loopback address:
 ```sh
 docker exec scryfall-downloader python -m scryfall_downloader.sync --include-tokens msh
 ```
+
+## Listening port
+
+Set `SCRYFALL_PORT` to an integer from `1` to `65535`. If unset, the server
+listens on `8765`. On a native launch, `--port` overrides the environment:
+
+```sh
+SCRYFALL_PORT=18765 python3 -m scryfall_downloader
+```
+
+In a container, pass `-e SCRYFALL_PORT=18765` and publish the matching internal
+port with `-p 127.0.0.1:18765:18765`. Use the environment variable rather than
+`--port` so the bundled health check and `docker exec` sync client use the same
+port. Image metadata still exposes `8765`, so publish the custom port explicitly.
+To change only the host-side port, leave `SCRYFALL_PORT` unset and use
+`-p 127.0.0.1:18765:8765`.
 
 ## Network and proxies
 
@@ -112,8 +128,8 @@ podman run --rm --name scryfall-downloader --stop-timeout 30 \
 Pass lowercase names with `-e https_proxy -e no_proxy` if needed. To opt into
 [WebP](library.md#webp-opt-in) or authentication, pass `-e SCRYFALL_ENABLE_WEBP`
 or `-e SCRYFALL_API_TOKEN`. Preserve the writable `/data` mount across
-replacements so the service can resume jobs. The bundled health probe uses
-`/api/v1/health` on the default internal port `8765`.
+replacements so the service can resume jobs. The bundled health check uses
+`/api/v1/health` on the [configured internal port](#listening-port).
 
 On POSIX the server uses the launching UID/GID (image default: `10001:10001`).
 Use `--user UID:GID` for a container or pass both `--uid` and `--gid` to the

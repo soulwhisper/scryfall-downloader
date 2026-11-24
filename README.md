@@ -22,6 +22,7 @@ docker run --rm --name scryfall-downloader --stop-timeout 30 \
 ```
 
 Open <http://127.0.0.1:8765/> for the Web UI; REST clients use `/api/v1`.
+Set [`SCRYFALL_PORT`](docs/operations.md#listening-port) to change the default `8765`.
 The local server defaults to the repository's `data/` directory (`--data DIR`
 overrides it); the container uses `/data`. Keep one downloader per data directory.
 For LAN access, see [authentication and HTTPS](docs/operations.md#network-and-proxies).

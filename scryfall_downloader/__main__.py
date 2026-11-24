@@ -8,7 +8,7 @@ import sqlite3
 
 from .jobs import Jobs
 from .ownership import repair_ownership, set_identity
-from .protocol import BEARER_TOKEN, DEFAULT_PORT
+from .protocol import BEARER_TOKEN, DEFAULT_PORT, default_port
 from .server import Server
 
 
@@ -29,7 +29,7 @@ def posix_id(value: str) -> int:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bind", default="127.0.0.1", help="HTTP listen address (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"HTTP port (default: {DEFAULT_PORT})")
+    parser.add_argument("--port", type=int, help=f"HTTP port (overrides SCRYFALL_PORT; default: {DEFAULT_PORT})")
     parser.add_argument("--data", type=Path, default=Path(__file__).resolve().parents[1] / "data",
                         help="Output and cache directory (default: data/ at the repository root)")
     parser.add_argument("--forge-editions", type=Path, help="Forge's res/editions directory; overrides automatic edition lookup")
@@ -40,7 +40,7 @@ def main():
     parser.add_argument("--repair-ownership", action="store_true", help="Repair image ownership offline, then exit")
     parser.add_argument("--dry-run", action="store_true", help="Preview --repair-ownership without changes")
     args = parser.parse_args()
-    if not 0 <= args.port <= 65535:
+    if args.port is not None and not 0 <= args.port <= 65535:
         parser.error("--port must be between 0 and 65535")
     if (args.uid is None) != (args.gid is None) or (args.repair_ownership and args.uid is None):
         parser.error("--uid and --gid must be provided together; both are required for ownership repair")
@@ -53,6 +53,7 @@ def main():
             action = "Would change" if args.dry_run else "Changed"
             print(f"{action} ownership on {changed} entries; skipped {skipped} links or non-regular images")
             return
+        port = args.port if args.port is not None else default_port()
         if args.uid is not None:
             set_identity(args.uid, args.gid)
         editions = args.forge_editions.expanduser().resolve() if args.forge_editions else None
@@ -63,7 +64,7 @@ def main():
         if token is not None and not BEARER_TOKEN.fullmatch(token):
             raise ValueError("SCRYFALL_API_TOKEN must be a nonempty Bearer token")
         jobs = Jobs(root, args.workers, editions, args.proxy, webp=webp == "1")
-        server = Server((args.bind, args.port), jobs, token)
+        server = Server((args.bind, port), jobs, token)
     except (OSError, ValueError, sqlite3.Error) as exc:
         parser.exit(1, f"Error: {exc}\n")
     signal.signal(signal.SIGTERM, interrupt)

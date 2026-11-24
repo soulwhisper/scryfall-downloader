@@ -17,7 +17,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-from .protocol import API_PREFIX, BEARER_TOKEN, DEFAULT_LANGUAGES, DEFAULT_PORT, TERMINAL, normalize_languages
+from .protocol import API_PREFIX, BEARER_TOKEN, DEFAULT_LANGUAGES, DEFAULT_PORT, TERMINAL, default_port, normalize_languages
 from .set_catalog import expand_sets
 
 
@@ -228,8 +228,8 @@ def main(argv=None):
     today = datetime.now(timezone.utc).date()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sets", metavar="SET", nargs="*")
-    parser.add_argument("--api", default=f"http://127.0.0.1:{DEFAULT_PORT}",
-                        help=f"downloader base URL, without {API_PREFIX} (default: %(default)s)")
+    parser.add_argument("--api", help=f"downloader base URL, without {API_PREFIX} "
+                        f"(default: loopback on SCRYFALL_PORT, or {DEFAULT_PORT} if unset)")
     parser.add_argument("--include-tokens", action="store_true", help="also sync token sets whose catalog parent is selected")
     parser.add_argument("--new-releases-days", type=int, metavar="N", help="also sync paper core and expansion sets released in the last N days (UTC)")
     parser.add_argument("--language", action="append", metavar="CODE", help="language in priority order (repeatable; default zhs, en)")
@@ -247,6 +247,11 @@ def main(argv=None):
         parser.error("--wait must be a positive finite number of seconds")
     if not args.round.strip():
         parser.error("--round must not be blank")
+    if args.api is None:
+        try:
+            args.api = f"http://127.0.0.1:{default_port()}"
+        except ValueError as exc:
+            parser.error(str(exc))
     try:
         parts = urlsplit(args.api)
         if (parts.scheme not in ("http", "https") or not parts.hostname or parts.port == 0

@@ -24,3 +24,4 @@ jobs:
         run: |
           docker build --file docker/Dockerfile --tag scryfall-downloader:pr .
           bash docker/smoke.sh scryfall-downloader:pr
+          SCRYFALL_PORT=18765 bash docker/smoke.sh scryfall-downloader:pr
