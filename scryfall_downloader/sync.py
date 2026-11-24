@@ -6,7 +6,6 @@ from hashlib import sha256
 import http.client
 import json
 import math
-import os
 from queue import Empty, SimpleQueue
 import re
 import shlex
@@ -17,7 +16,9 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-from .protocol import API_PREFIX, BEARER_TOKEN, DEFAULT_LANGUAGES, DEFAULT_PORT, TERMINAL, default_port, normalize_languages
+from .protocol import (
+    API_PREFIX, DEFAULT_LANGUAGES, DEFAULT_PORT, TERMINAL, default_port, downloader_api_token, normalize_languages,
+)
 from .set_catalog import expand_sets
 
 
@@ -259,9 +260,10 @@ def main(argv=None):
             raise ValueError
     except ValueError:
         parser.error("--api must be an HTTP(S) URL without credentials, query or fragment")
-    token = os.environ.get("SCRYFALL_API_TOKEN")
-    if token and not BEARER_TOKEN.fullmatch(token):
-        parser.error("SCRYFALL_API_TOKEN is not a valid Bearer token")
+    try:
+        token = downloader_api_token()
+    except ValueError as exc:
+        parser.error(str(exc))
     try:
         return sync(API(args.api, token, time.monotonic() + args.wait), args, today)
     except SyncError as exc:

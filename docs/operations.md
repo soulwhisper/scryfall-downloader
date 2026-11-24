@@ -65,7 +65,7 @@ python3 -m scryfall_downloader.sync --api https://downloader.example \
 
 `--api` takes the base URL without `/api/v1`. If omitted, the client connects
 to `127.0.0.1` on [`DEFAULT_PORT`](#listening-port), or `8765` when unset.
-The client adds the prefix and reads `SCRYFALL_API_TOKEN` when configured.
+The client adds the prefix and reads `DOWNLOADER_API_TOKEN` when configured.
 Direct HTTP clients submit downloads to `/api/v1/jobs`. Use `--language CODE`
 repeatedly for language priority, and `--min-quality`, `--refresh-language`, or
 `--refresh-scan` for an explicit [image policy](library.md#quality-and-refresh).
@@ -104,10 +104,11 @@ To change only the host-side port, leave `DEFAULT_PORT` unset and use
 ## Network and proxies
 
 Keep the service on a trusted network. For LAN access, set
-`SCRYFALL_API_TOKEN` and put the service behind an HTTPS reverse proxy to
-protect the token in transit. Serve the console at the proxy's origin root
-and preserve the `Host` header and the API's `Authorization` header. The
-console keeps the token in tab memory only; scripts use
+`DOWNLOADER_API_TOKEN` to a dedicated secret (for example, generated with
+`openssl rand -hex 32`) and put the service behind an HTTPS reverse proxy to
+protect the token in transit. Do not reuse a password. Serve the console at
+the proxy's origin root and preserve the `Host` and `Authorization` headers.
+The console keeps the token in tab memory only; scripts use
 [Bearer authentication](api.md).
 
 The source server and quick-start port mapping listen on loopback. If the
@@ -145,7 +146,7 @@ podman run --rm --name scryfall-downloader --stop-timeout 30 \
 
 Pass lowercase names with `-e https_proxy -e no_proxy` if needed. To opt into
 [WebP](library.md#webp-opt-in) or authentication, pass `-e SCRYFALL_ENABLE_WEBP`
-or `-e SCRYFALL_API_TOKEN`. Preserve the writable `/data` mount across
+or `-e DOWNLOADER_API_TOKEN`. Preserve the writable `/data` mount across
 replacements so the service can resume jobs. The bundled health check uses
 `/api/v1/health` on the [configured internal port](#listening-port). Set
 `SCRYFALL_HEALTH_UPSTREAM=1` to probe Scryfall's bulk metadata API as well,
@@ -226,6 +227,13 @@ directory (including SQLite state) and any separately mounted pictures.
 Use the bundled health command instead of a deployment-specific probe;
 it checks the versioned endpoint and can check upstream separately. Open
 the Web UI and check health before resuming scheduled work.
+
+When upgrading from v0.4.0 or earlier with authentication configured, rename
+`SCRYFALL_API_TOKEN` to `DOWNLOADER_API_TOKEN` in the server environment and
+sync scripts. Keep the token value and change the server environment key
+together with the image. With only the old variable, the server refuses to
+start rather than leaving the API unprotected. Restore the old variable name
+when rolling back to an image that expects it.
 
 To downgrade, restore the matching pre-upgrade state and pictures before
 starting the previous image. Version v0.2.0 cannot write the newer database
