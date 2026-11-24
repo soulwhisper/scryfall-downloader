@@ -28,7 +28,8 @@ curl -X POST "http://127.0.0.1:8765/jobs/$job_id/resume"
 ```
 
 - `POST /jobs`: accepts 1–10 exact Scryfall set codes, case-insensitive. Returns `202 Accepted` and a `Location` header. Request a separate token set such as `tmom` explicitly. `languages` is an optional preference list shared by all requested sets, defaulting to `["zhs","en"]`. Use `["ja"]` for Japanese only or `["ja","en"]` for Japanese with English fallback. Use [Scryfall language codes](https://scryfall.com/docs/api/languages); `zh-CN` and `zh-TW` are aliases for `zhs` and `zht`.
-- `GET /jobs/{id}`: shows the current set and each set's status, printing and image totals, processed/downloaded/cached/unavailable/failed image counts, language counts, and any warnings or errors. Image totals are `null` until the set is resolved. Each face is counted separately.
+- Include `"min_quality":"png"` to upgrade valid images only when a higher-quality scan meets that floor. Other floors are `large` (672 × 936), `normal` (488 × 680), and `small` (146 × 204). The `png` floor also requires lossless PNG at 744 × 1040 or larger. Either orientation counts. Without a floor, a valid local image is never replaced to change quality or language.
+- `GET /jobs/{id}`: shows totals and per-set progress. `cached` includes validated files already on disk; imported files with no known language appear under `languages.unknown`. `below_quality` counts retained or newly fetched images that did not meet an explicit floor. Image totals are `null` until the set is resolved. Each face is counted separately.
 - `GET /jobs`: lists recent jobs. Terminal job states are `completed`, `partial`, and `failed`.
 - `POST /jobs/{id}/pause`: parks a queued job immediately or returns `202` while a running job is `pausing`. Poll until `paused`; the downloader stops dispatching work and drains in-flight requests. `POST /jobs/{id}/resume` requeues a paused job under the same ID. Terminal jobs cannot be resumed; submit a new job to retry them.
 
@@ -42,11 +43,23 @@ The downloader checks each printing and face in language preference order, skipp
 
 Regular cards are saved under `data/pics/cards/<SHORT_CODE>/` with English names. For example, `MOM/Invasion of Ravnica.full.png` and `MOM/Guildpact Paragon.full.png`. Forge edition files provide the short folder code (`Code2`, when defined) and art numbering. When no matching metadata is available, the downloader uses the uppercase Scryfall code and infers art numbering; check the job warning and use your Forge edition files for sets whose names or numbering differ. Filename collisions that cannot share a Forge key go to `data/extras/` rather than overwrite another printing. Tokens go to `data/pics/tokens/`, using Forge's token names when the edition defines them.
 
-Each file is published atomically after format markers and any advertised `Content-Length` are checked. A SHA-256 digest is stored per image and checked before reusing the file. Missing or changed files are downloaded again; images indexed by older versions without a digest are downloaded once to establish it. Incomplete or invalid bodies, timeouts, and temporary CDN HTTP errors get up to three retries with backoff. Missing or repeatedly invalid scans can fall back to the next source. Exhausted failures and unavailable images are reported separately.
+The downloader checks existing `.jpg` and `.png` files at the exact Forge key before requesting a CDN image, even if they were copied in manually. It checks image headers, dimensions and end markers, verifies PNG chunk checksums on new or unindexed files, and records SHA-256 for later reuse. Missing files and checksum failures are eligible for repair without a quality request. Unreadable files result in a permission error, not a blind replacement. Incomplete transfers and temporary CDN errors retry with backoff.
 
-The last successfully downloaded language for a Forge filename wins. A strict language job does not fetch unrequested scans or erase older files when the requested scan is unavailable. Use separate data directories if you need to keep separate language collections.
+An explicit quality upgrade cannot reduce either pixel dimension. A valid current file is kept when no acceptable upgrade is available. A same-key JPEG that would mask a replacement PNG in Forge is removed only after a valid PNG is available. The downloader does not infer identities or rename other legacy filenames. `languages` controls new fetches only; use separate libraries for separate language collections.
 
 Point `cardPicsDir` in `forge.profile.properties` to the absolute path of `data/pics/cards/` and restart Forge. To use tokens, copy the corresponding folders from `data/pics/tokens/` into your Forge cache's `pics/tokens/`. Prefer a separate card image directory: existing JPEGs with the same stem can take precedence over PNGs in Forge.
+
+### File ownership
+
+On POSIX, the server uses the launching UID/GID by default (container: `10001:10001`). Specify `--uid` and `--gid` together to select the service identity. When launched as root with these flags, it drops privileges before opening the database or starting the API. For containers, you can instead set `--user UID:GID` and mount writable state and image directories for that identity. New images are mode `0644`; this does not change state-file modes.
+
+For older or unmatched images, stop the server and preview the ownership repair on the same data directory or mounts:
+
+```sh
+sudo python3 downloader.py --data "$PWD/data" --uid 10001 --gid 10001 --repair-ownership --dry-run
+```
+
+Drop `--dry-run` to apply. The command runs offline and only changes mismatched directory and image ownership within `pics/cards`, `pics/tokens`, their parent `pics`, and `extras`. It skips symbolic links, hard-linked images, and non-image files and does not change permission bits, names, or SQLite ownership.
 
 ## Proxy and container
 

@@ -19,13 +19,13 @@ from downloader import Jobs, Server
 IMAGE_ORIGIN = "https://cards.scryfall.io/"
 
 
-def pixel_png(red):
+def pixel_png(red, width=1, height=1):
     def chunk(kind, data):
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
 
     return (b"\x89PNG\r\n\x1a\n"
-            + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(bytes((0, red, 0, 0))))
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress((b"\x00" + bytes((red, 0, 0)) * width) * height))
             + chunk(b"IEND", b""))
 
 
@@ -146,6 +146,8 @@ class DownloaderTest(unittest.TestCase):
             self.assertEqual(upstream.image_requests.count("zh-front.png"), 2)
             front = folder / "Vel.full.png"
             self.assertEqual(front.read_bytes(), chinese)
+            if os.name == "posix":
+                self.assertEqual(front.stat().st_mode & 0o777, 0o644)
             self.assertFalse(old_file.exists())
             for filename in ("After.full.png", "Oak1.full.png", "Oak2.full.png"):
                 self.assertEqual((folder / filename).read_bytes(), english)
@@ -159,11 +161,52 @@ class DownloaderTest(unittest.TestCase):
             progress = self.wait_for(port, f"/jobs/{job['id']}", "completed")["sets"]["tst"]
             self.assertEqual((progress["cached"], progress["downloaded"]), (3, 1))
             self.assertEqual(front.read_bytes(), chinese)
+
+            # A strict language request does not overwrite validated existing copies.
+            front.unlink()
+            (folder / "Oak2.full.png").unlink()
             job = self.api(port, "POST", "/jobs", {"sets": ["tst"], "languages": ["ja"]}, expect=202)
             progress = self.wait_for(port, f"/jobs/{job['id']}", "partial")["sets"]["tst"]
-            self.assertEqual((progress["unavailable"], progress["languages"]), (3, {"ja": 1}))
+            self.assertEqual((progress["unavailable"], progress["languages"]), (1, {"ja": 1, "en": 2}))
             self.assertEqual(front.read_bytes(), japanese)
             self.assertEqual((folder / "After.full.png").read_bytes(), english)
+
+    def test_existing_files_are_adopted_and_only_explicitly_upgraded(self):
+        normal = pixel_png(30, 488, 680)
+        high = pixel_png(70, 744, 1040)
+        scans = {"oak.png": high, "spruce.png": pixel_png(40, 146, 204)}
+        upstream = Upstream([printing(1, "en", "Oak", "oak.png"),
+                             printing(2, "en", "Spruce", "spruce.png")], scans)
+        folder = self.root / "pics" / "cards" / "FT"
+        folder.mkdir(parents=True)
+        oak = folder / "Oak.full.png"
+        spruce = folder / "Spruce.full.png"
+        for path in (oak, spruce):
+            path.write_bytes(normal)
+
+        with self.server(upstream, "1 C Oak\n2 C Spruce\n") as port:
+            def run_job(status, **options):
+                job = self.api(port, "POST", "/jobs", {"sets": ["tst"], **options}, expect=202)
+                return self.wait_for(port, f"/jobs/{job['id']}", status)["sets"]["tst"]
+
+            for options in ({}, {"min_quality": "normal"}):
+                progress = run_job("completed", **options)
+                self.assertEqual(progress["cached"], 2)
+                self.assertEqual(progress["languages"]["unknown"], 2)
+                self.assertEqual(upstream.image_requests, [])
+
+            progress = run_job("partial", min_quality="png")
+            self.assertCountEqual(upstream.image_requests, scans)
+            self.assertEqual((progress["cached"], progress["downloaded"], progress["below_quality"]), (1, 1, 1))
+            self.assertEqual(oak.read_bytes(), high)
+            self.assertEqual(spruce.read_bytes(), normal)
+
+            # Once a file meets the floor, asking again does not fetch it.
+            scans["spruce.png"] = high
+            progress = run_job("completed", min_quality="png")
+            self.assertEqual((progress["downloaded"], progress["cached"]), (1, 1))
+            self.assertEqual(upstream.image_requests.count("oak.png"), 1)
+            self.assertEqual(spruce.read_bytes(), high)
 
     def test_paused_job_survives_restart_and_keeps_verified_work(self):
         entered, release = threading.Event(), threading.Event()

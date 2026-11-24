@@ -14,6 +14,8 @@ import threading
 from uuid import uuid4
 
 from forge import ForgeEditions, plan_images
+from imagefiles import QUALITY
+from ownership import repair_ownership, set_identity
 from upstream import DownloadInterrupted, SavedImage, Scryfall, UpstreamError, Web, check_interrupted, download
 
 
@@ -46,6 +48,7 @@ def new_progress(languages: list[str]) -> dict:
     return {
         "status": "queued", "printings": None, "total_images": None,
         **dict.fromkeys(COUNTERS, 0), "languages": dict.fromkeys(languages, 0),
+        "below_quality": 0,
         "warnings": [], "errors": [],
     }
 
@@ -74,20 +77,25 @@ class Jobs:
         self.db.execute("PRAGMA journal_mode = WAL")
         with self.db:
             self.db.execute("BEGIN")
-            legacy = any(row[1] == "mtime_ns" for row in self.db.execute("PRAGMA table_info(images)"))
-            if legacy:
+            columns = {row[1] for row in self.db.execute("PRAGMA table_info(images)")}
+            migrate = columns and "language" not in columns
+            if migrate:
                 self.db.execute("ALTER TABLE images RENAME TO legacy_images")
             self.db.execute("""CREATE TABLE IF NOT EXISTS images (
-                stem TEXT PRIMARY KEY, url TEXT NOT NULL, suffix TEXT NOT NULL,
-                size INTEGER NOT NULL, sha256 TEXT
+                stem TEXT PRIMARY KEY, url TEXT, suffix TEXT NOT NULL,
+                size INTEGER NOT NULL, sha256 TEXT, language TEXT
             )""")
-            if legacy:
-                self.db.execute("""INSERT INTO images (stem, url, suffix, size)
-                                   SELECT stem, url, suffix, size FROM legacy_images""")
+            if migrate:
+                checksum = "sha256" if "sha256" in columns else "NULL"
+                self.db.execute(f"""INSERT INTO images (stem, url, suffix, size, sha256)
+                                    SELECT stem, url, suffix, size, {checksum} FROM legacy_images""")
                 self.db.execute("DROP TABLE legacy_images")
             self.db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
             for (payload,) in self.db.execute("SELECT payload FROM jobs ORDER BY rowid").fetchall():
                 job = json.loads(payload)
+                job.setdefault("min_quality", None)
+                for progress in job["sets"].values():
+                    progress.setdefault("below_quality", 0)
                 self.jobs[job["id"]] = job
                 if job["status"] in ("running", "pausing"):
                     self._park(job, "paused" if job["status"] == "pausing" else "queued")
@@ -114,7 +122,7 @@ class Jobs:
         self.worker.join()
         self.db.close()
 
-    def submit(self, codes: list[str], languages: list[str]) -> dict:
+    def submit(self, codes: list[str], languages: list[str], minimum: str | None) -> dict:
         with self.ready:
             if self.stopping:
                 raise QueueFull("Downloader is stopping")
@@ -126,7 +134,7 @@ class Jobs:
             job = {
                 "id": uuid4().hex, "status": "queued", "created_at": now(),
                 "started_at": None, "finished_at": None, "current_set": None,
-                "languages": languages,
+                "languages": languages, "min_quality": minimum,
                 "sets": {code: new_progress(languages) for code in codes},
             }
             with self.db:
@@ -257,31 +265,35 @@ class Jobs:
                     asset = next(remaining, None)
                     if asset is None:
                         break
-                    previous = self.db.execute("SELECT url, suffix, size, sha256 FROM images WHERE stem = ?",
-                                               (asset.stem,)).fetchone()
-                    task = pool.submit(download, self.web, self.root, asset,
-                                       SavedImage(*previous) if previous else None, self.interrupt)
-                    tasks[task] = asset.stem
+                    row = self.db.execute("SELECT url, suffix, size, sha256, language FROM images WHERE stem = ?",
+                                          (asset.stem,)).fetchone()
+                    previous = SavedImage(*row) if row else None
+                    task = pool.submit(download, self.web, self.root, asset, previous,
+                                       self.interrupt, job["min_quality"])
+                    tasks[task] = asset.stem, previous
             if not tasks:
                 break
             done, _ = wait(tasks, return_when=FIRST_COMPLETED)
             for task in done:
-                stem = tasks.pop(task)
+                stem, previous = tasks.pop(task)
                 error = None
                 try:
-                    outcome, source, saved = task.result()
+                    outcome, saved, below_quality = task.result()
                 except DownloadInterrupted:
                     continue
                 except Exception as exc:
-                    outcome, source, saved = "failed", None, None
+                    outcome, saved, below_quality = "failed", None, False
                     error = f"{stem}: {exc}"
                 with self.ready, self.db:
-                    if outcome == "downloaded":
-                        self.db.execute("INSERT OR REPLACE INTO images VALUES (?, ?, ?, ?, ?)",
-                                        (stem, saved.url, saved.suffix, saved.size, saved.sha256))
+                    if saved is not None and saved != previous:
+                        self.db.execute("INSERT OR REPLACE INTO images VALUES (?, ?, ?, ?, ?, ?)",
+                                        (stem, saved.url, saved.suffix, saved.size, saved.sha256, saved.language))
                     progress[outcome] += 1
-                    if source:
-                        progress["languages"][source.language] += 1
+                    progress["below_quality"] += below_quality
+                    if saved is not None:
+                        lang = saved.language or "unknown"
+                        counts = progress["languages"]
+                        counts[lang] = counts.get(lang, 0) + 1
                     if error and len(progress["errors"]) < 12:
                         progress["errors"].append(error)
                     self._save(job)
@@ -291,7 +303,7 @@ class Jobs:
                 raise DownloadInterrupted
             if progress["failed"] and not (progress["downloaded"] or progress["cached"]):
                 progress["status"] = "failed"
-            elif progress["failed"] or progress["unavailable"]:
+            elif progress["failed"] or progress["unavailable"] or progress["below_quality"]:
                 progress["status"] = "partial"
             else:
                 progress["status"] = "completed"
@@ -342,7 +354,8 @@ class API(BaseHTTPRequestHandler):
             if not 1 <= length <= 4096 or self.headers.get("Transfer-Encoding") is not None:
                 raise ValueError
             body = json.loads(self.rfile.read(length))
-            codes = body.get("sets") if isinstance(body, dict) and not set(body) - {"sets", "languages"} else None
+            codes = (body.get("sets") if isinstance(body, dict)
+                     and not set(body) - {"sets", "languages", "min_quality"} else None)
             if not isinstance(codes, list) or not 1 <= len(codes) <= 10:
                 raise ValueError
             if not all(isinstance(code, str) and SET_CODE.fullmatch(code) for code in codes):
@@ -357,8 +370,11 @@ class API(BaseHTTPRequestHandler):
         languages = list(dict.fromkeys(LANGUAGE_ALIASES.get(lang, lang) for lang in languages))
         if not LANGUAGE_CODES.issuperset(languages):
             return self.respond(400, {"error": "Unknown Scryfall language code"})
+        minimum = body.get("min_quality")
+        if minimum is not None and (not isinstance(minimum, str) or minimum not in QUALITY):
+            return self.respond(400, {"error": "min_quality must be small, normal, large, or png"})
         try:
-            job = self.server.jobs.submit(list(dict.fromkeys(code.lower() for code in codes)), languages)
+            job = self.server.jobs.submit(list(dict.fromkeys(code.lower() for code in codes)), languages, minimum)
         except QueueFull as exc:
             return self.respond(503, {"error": str(exc)})
         return self.respond(202, job, location=f"/jobs/{job['id']}")
@@ -385,6 +401,16 @@ def interrupt(_signum, _frame):
     raise KeyboardInterrupt
 
 
+def posix_id(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError:
+        number = -1
+    if not 0 <= number < 2**32 - 1:
+        raise argparse.ArgumentTypeError("expected a numeric POSIX UID or GID")
+    return number
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bind", default="127.0.0.1", help="HTTP listen address (default: 127.0.0.1)")
@@ -394,12 +420,28 @@ def main():
     parser.add_argument("--forge-editions", type=Path, help="Forge's res/editions directory; overrides automatic edition lookup")
     parser.add_argument("--workers", type=int, default=4, choices=range(1, 9), help="Concurrent image downloads (default: 4)")
     parser.add_argument("--proxy", help="Outbound HTTP CONNECT proxy URL (default: use HTTPS_PROXY)")
+    parser.add_argument("--uid", type=posix_id, help="Service UID or target UID for ownership repair")
+    parser.add_argument("--gid", type=posix_id, help="Service GID or target GID for ownership repair")
+    parser.add_argument("--repair-ownership", action="store_true", help="Repair image ownership offline, then exit")
+    parser.add_argument("--dry-run", action="store_true", help="Preview --repair-ownership without changes")
     args = parser.parse_args()
     if not 0 <= args.port <= 65535:
         parser.error("--port must be between 0 and 65535")
+    if (args.uid is None) != (args.gid is None) or (args.repair_ownership and args.uid is None):
+        parser.error("--uid and --gid must be provided together; both are required for ownership repair")
+    if args.dry_run and not args.repair_ownership:
+        parser.error("--dry-run requires --repair-ownership")
     try:
+        root = args.data.expanduser().resolve()
+        if args.repair_ownership:
+            changed, skipped = repair_ownership(root, args.uid, args.gid, dry_run=args.dry_run)
+            action = "Would change" if args.dry_run else "Changed"
+            print(f"{action} ownership on {changed} entries; skipped {skipped} links or non-regular images")
+            return
+        if args.uid is not None:
+            set_identity(args.uid, args.gid)
         editions = args.forge_editions.expanduser().resolve() if args.forge_editions else None
-        jobs = Jobs(args.data.expanduser().resolve(), args.workers, editions, args.proxy)
+        jobs = Jobs(root, args.workers, editions, args.proxy)
         server = Server((args.bind, args.port), jobs)
     except (OSError, ValueError, sqlite3.Error) as exc:
         parser.exit(1, f"Error: {exc}\n")

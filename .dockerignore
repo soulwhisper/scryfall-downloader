@@ -2,4 +2,6 @@
 !Dockerfile
 !downloader.py
 !forge.py
+!imagefiles.py
+!ownership.py
 !upstream.py

@@ -179,7 +179,7 @@ def image_sources(prints: dict[str, dict], side: int, languages: list[str]) -> t
         for version, suffix in FORMATS:
             if (url := images.get(version)) and url not in seen:
                 seen.add(url)
-                sources.append(Source(lang, suffix, url))
+                sources.append(Source(lang, "normal" if version == "jpeg" else version, suffix, url))
     return tuple(sources)
 
 
