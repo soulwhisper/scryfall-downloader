@@ -1,0 +1,72 @@
+"""POSIX service identity and offline ownership repair for the Forge image tree."""
+
+from contextlib import closing
+import os
+from pathlib import Path
+import stat
+
+from imagefiles import IMAGE_SUFFIXES
+
+
+def set_identity(uid: int, gid: int):
+    if not hasattr(os, "setuid"):
+        raise ValueError("UID/GID selection requires a POSIX system")
+    if (os.geteuid(), os.getegid()) == (uid, gid):
+        return
+    if os.geteuid() != 0:
+        raise ValueError("Run as the requested UID:GID, or start as root to drop privileges")
+    os.setgroups([])
+    os.setgid(gid)
+    os.setuid(uid)
+
+
+def repair_ownership(root: Path, uid: int, gid: int, *, dry_run: bool) -> tuple[int, int]:
+    """Change only the Forge directory tree and image entries, without following links."""
+    if not hasattr(os, "fwalk"):
+        raise ValueError("Ownership repair requires a POSIX system with dirfd support")
+    changed = skipped = 0
+
+    def fail(error):
+        raise error
+
+    for top in (root / "pics", root / "extras"):
+        try:
+            top_mode = top.lstat().st_mode
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISDIR(top_mode):
+            raise ValueError(f"Expected a real directory: {top}")
+        with closing(os.fwalk(top, follow_symlinks=False, onerror=fail)) as walk:
+            for path, dirs, files, directory in walk:
+                if top.name == "pics" and path == str(top):
+                    dirs[:] = [name for name in dirs if name in ("cards", "tokens")]
+                    files = []
+                info = os.fstat(directory)
+                if (info.st_uid, info.st_gid) != (uid, gid):
+                    if dry_run:
+                        print(f"{path!r}: {info.st_uid}:{info.st_gid} -> {uid}:{gid}")
+                    else:
+                        os.fchown(directory, uid, gid)
+                    changed += 1
+                for name in files:
+                    if Path(name).suffix.lower() not in IMAGE_SUFFIXES:
+                        continue
+                    info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                        skipped += 1
+                        continue
+                    if (info.st_uid, info.st_gid) == (uid, gid):
+                        continue
+                    if dry_run:
+                        print(f"{os.path.join(path, name)!r}: {info.st_uid}:{info.st_gid} -> {uid}:{gid}")
+                    else:
+                        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                        try:
+                            current = os.fstat(fd)
+                            if not os.path.samestat(info, current) or current.st_nlink != 1:
+                                raise OSError(f"Image changed during ownership repair: {name}")
+                            os.fchown(fd, uid, gid)
+                        finally:
+                            os.close(fd)
+                    changed += 1
+    return changed, skipped

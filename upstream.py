@@ -15,6 +15,8 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
 
+from imagefiles import IMAGE_SUFFIXES, QUALITY, ImageSize, InvalidImage, image_size
+
 
 SEARCH_URL = "https://api.scryfall.com/cards/search"
 CACHE_AGE = 24 * 60 * 60
@@ -22,17 +24,9 @@ MAX_IMAGE_BYTES = 16 * 1024 * 1024
 IMAGE_ATTEMPTS = 4
 MAX_RETRY_DELAY = 60
 NETWORK_ERRORS = (OSError, http.client.HTTPException, ValueError)
-SIGNATURES = {
-    ".png": (b"\x89PNG\r\n\x1a\n", b"\x00\x00\x00\x00IEND\xaeB`\x82"),
-    ".jpg": (b"\xff\xd8\xff", b"\xff\xd9"),
-}
 
 
 class UpstreamError(Exception):
-    pass
-
-
-class InvalidImage(UpstreamError):
     pass
 
 
@@ -162,6 +156,7 @@ class Scryfall:
 @dataclass(frozen=True, slots=True)
 class Source:
     language: str
+    quality: str
     suffix: str
     url: str
 
@@ -174,26 +169,35 @@ class Asset:
 
 @dataclass(frozen=True, slots=True)
 class SavedImage:
-    url: str
+    url: str | None
     suffix: str
     size: int
     sha256: str | None
-
-    def matches(self, path: Path) -> bool:
-        if self.sha256 is None:  # Receipts from the old size/mtime index must be downloaded again.
-            return False
-        try:
-            info = path.stat()
-            if info.st_size != self.size or not stat.S_ISREG(info.st_mode):
-                return False
-            with path.open("rb") as file:
-                return hashlib.file_digest(file, "sha256").hexdigest() == self.sha256
-        except FileNotFoundError:
-            return False
+    language: str | None
 
 
-def save_image(reply, file, suffix: str, stop) -> tuple[int, str]:
-    start, end = SIGNATURES[suffix]
+class BelowQuality(Exception):
+    pass
+
+
+def _read_local(path: Path, info, previous: SavedImage | None, sources: tuple[Source, ...]):
+    with path.open("rb") as file:
+        if not os.path.samestat(info, os.fstat(file.fileno())):
+            raise OSError(f"Image changed while opening {path.name}")
+        suffix = path.suffix
+        indexed = previous is not None and previous.suffix == suffix and previous.sha256 is not None
+        shape = image_size(file, suffix, info.st_size, check_png_chunks=not indexed)
+        file.seek(0)
+        digest = hashlib.file_digest(file, "sha256").hexdigest()
+    if indexed:
+        if digest != previous.sha256:
+            raise InvalidImage("Image SHA-256 no longer matches")
+        language = previous.language or next((s.language for s in sources if s.url == previous.url), None)
+        return SavedImage(previous.url, suffix, info.st_size, digest, language), shape
+    return SavedImage(None, suffix, info.st_size, digest, None), shape
+
+
+def save_image(reply, file, suffix: str, stop) -> tuple[int, str, ImageSize]:
     if reply.status != 200:
         raise InvalidImage(f"Expected a full image; got HTTP {reply.status}")
     raw_length = reply.headers.get("Content-Length")
@@ -203,13 +207,8 @@ def save_image(reply, file, suffix: str, stop) -> tuple[int, str]:
         raise InvalidImage("Invalid image Content-Length") from None
     if length is not None and length > MAX_IMAGE_BYTES:
         raise UpstreamError("Image exceeds the 16 MiB limit")
-    head = reply.read(len(start))
-    if head != start:
-        raise InvalidImage("Image content does not match its advertised format")
-    file.write(head)
-    digest = hashlib.sha256(head)
-    size = len(head)
-    tail = head
+    digest = hashlib.sha256()
+    size = 0
     while True:
         check_interrupted(stop)
         block = reply.read(128 * 1024)
@@ -220,10 +219,9 @@ def save_image(reply, file, suffix: str, stop) -> tuple[int, str]:
             raise UpstreamError("Image exceeds the 16 MiB limit")
         file.write(block)
         digest.update(block)
-        tail = (tail + block)[-len(end):] if len(block) < len(end) else block[-len(end):]
-    if tail != end or (length is not None and size != length):
+    if length is not None and size != length:
         raise InvalidImage("Incomplete image body")
-    return size, digest.hexdigest()
+    return size, digest.hexdigest(), image_size(file, suffix, size)
 
 
 def _retry_after(value: str | None) -> float:
@@ -237,15 +235,26 @@ def _retry_after(value: str | None) -> float:
         return 0
 
 
-def _fetch_image(web: Web, path: Path, source: Source, stop) -> SavedImage | None:
+def _fetch_image(web: Web, path: Path, source: Source, stop, minimum: str | None,
+                 local_shapes: tuple[ImageSize, ...]) -> tuple[SavedImage, ImageSize] | None:
+    def write(file):
+        size, digest, shape = save_image(reply, file, source.suffix, stop)
+        if minimum is not None and (not shape.meets(minimum) or not all(shape.improves(old) for old in local_shapes)):
+            raise BelowQuality
+        check_interrupted(stop)
+        # Forge clients do not necessarily share the downloader's UID.
+        os.chmod(file.name, 0o644)
+        return SavedImage(source.url, source.suffix, size, digest, source.language), shape
+
     for attempt in range(IMAGE_ATTEMPTS):
         check_interrupted(stop)
         delay = 2 ** attempt
         last_attempt = attempt == IMAGE_ATTEMPTS - 1
         try:
             with web.open(source.url, "cards.scryfall.io", "image/png,image/jpeg") as reply:
-                size, digest = atomic_write(path, lambda file: save_image(reply, file, source.suffix, stop))
-            return SavedImage(source.url, source.suffix, size, digest)
+                return atomic_write(path, write)
+        except BelowQuality:
+            return None
         except HTTPError as exc:
             with exc:
                 if exc.code in (404, 410):
@@ -261,26 +270,75 @@ def _fetch_image(web: Web, path: Path, source: Source, stop) -> SavedImage | Non
             raise DownloadInterrupted
 
 
-def download(web: Web, root: Path, asset: Asset, previous: SavedImage | None, stop):
-    """Prefer the best valid image; never publish a partial response."""
+def download(web: Web, root: Path, asset: Asset, previous: SavedImage | None, stop, minimum: str | None):
+    """Inspect Forge's exact keys first; only an explicit minimum may replace a valid image."""
+    stem = root / asset.stem
+    directory = root
+    for component in stem.parent.relative_to(root).parts:
+        directory /= component
+        try:
+            if not stat.S_ISDIR(directory.lstat().st_mode):
+                raise OSError(f"Expected a real image directory: {directory}")
+        except FileNotFoundError:
+            break
+
+    jpg = stem.with_name(stem.name + ".jpg")
+    jpeg = None
+
+    def retire_jpeg(saved: SavedImage):
+        if saved.suffix == ".png" and jpeg is not None:
+            current = jpg.lstat()
+            if not os.path.samestat(jpeg, current) or jpeg.st_mtime_ns != current.st_mtime_ns:
+                raise OSError(f"Image changed while checking {jpg}")
+            # A broken or superseded same-key JPEG would mask this PNG in Forge.
+            jpg.unlink()
+
+    local = []
+    for suffix in IMAGE_SUFFIXES:
+        check_interrupted(stop)
+        path = stem.with_name(stem.name + suffix)
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(f"Not a regular file: {path}")
+        if suffix == ".jpg":
+            jpeg = info
+        try:
+            saved, shape = _read_local(path, info, previous, asset.sources)
+        except InvalidImage:
+            continue
+        if minimum is None or (shape.meets(minimum) and all(shape.improves(old) for _, old in local)):
+            check_interrupted(stop)
+            retire_jpeg(saved)
+            return "cached", saved, False
+        local.append((saved, shape))
+
+    local_shapes = tuple(shape for _, shape in local)
     invalid = None
     for source in asset.sources:
-        check_interrupted(stop)
-        path = root / (asset.stem + source.suffix)
-        if previous and previous.url == source.url and previous.suffix == source.suffix and previous.matches(path):
-            return "cached", source, previous
+        if local:
+            nominal = ImageSize(*QUALITY[source.quality], source.suffix)
+            if (not nominal.meets(minimum) or not all(nominal.improves(shape) for shape in local_shapes)
+                    or any(source.url == saved.url for saved, _ in local)):
+                continue
+        path = stem.with_name(stem.name + source.suffix)
         try:
-            saved = _fetch_image(web, path, source, stop)
+            result = _fetch_image(web, path, source, stop, minimum if local else None, local_shapes)
         except InvalidImage as exc:
             invalid = exc
             continue
-        if saved is None:
+        if result is None:
             continue
-
-        if previous and previous.suffix != source.suffix:
-            # Forge may choose .jpg ahead of .png. Remove only our superseded file.
-            (root / (asset.stem + previous.suffix)).unlink(missing_ok=True)
-        return "downloaded", source, saved
+        saved, shape = result
+        retire_jpeg(saved)
+        return "downloaded", saved, minimum is not None and not shape.meets(minimum)
+    if local:
+        saved = local[0][0]
+        check_interrupted(stop)
+        retire_jpeg(saved)
+        return "cached", saved, True
     if invalid is not None:
         raise invalid
-    return "unavailable", None, None
+    return "unavailable", None, False
