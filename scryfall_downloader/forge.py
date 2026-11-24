@@ -10,7 +10,7 @@ from urllib.error import HTTPError
 from urllib.parse import quote
 from uuid import UUID
 
-from upstream import Asset, NETWORK_ERRORS, Source, UpstreamError, Web, atomic_write, fresh
+from .upstream import Asset, NETWORK_ERRORS, Source, UpstreamError, Web, atomic_write, fresh
 
 
 EDITIONS_URL = "https://raw.githubusercontent.com/Card-Forge/forge/master/forge-gui/res/editions/"

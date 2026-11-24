@@ -19,3 +19,8 @@ jobs:
           python-version: '3.11'
       - name: Run downloader tests
         run: python -m unittest discover -v
+
+      - name: Build and smoke-test the container
+        run: |
+          docker build --file docker/Dockerfile --tag scryfall-downloader:pr .
+          bash docker/smoke.sh scryfall-downloader:pr

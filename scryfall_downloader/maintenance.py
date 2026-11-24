@@ -6,8 +6,8 @@ import os
 from pathlib import Path
 import stat
 
-from imagefiles import IMAGE_SUFFIXES
-from upstream import Asset, SavedImage, check_interrupted, local_images
+from .imagefiles import IMAGE_SUFFIXES
+from .upstream import Asset, SavedImage, check_interrupted, local_images
 
 
 @dataclass(frozen=True, slots=True)

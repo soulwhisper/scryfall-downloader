@@ -9,8 +9,8 @@ import unittest
 from unittest.mock import patch
 import zlib
 
-from maintenance import maintain
-from upstream import Asset, DownloadInterrupted, SavedImage, Source
+from scryfall_downloader.maintenance import maintain
+from scryfall_downloader.upstream import Asset, DownloadInterrupted, SavedImage, Source
 
 
 def pixel_png(red):
@@ -153,7 +153,7 @@ class MaintenanceTest(unittest.TestCase):
         self.assertTrue(self.legacy.is_symlink())
         self.legacy.unlink()
         self.legacy.write_bytes(self.image)
-        with patch("maintenance.os.listdir", side_effect=PermissionError("cannot list directory")):
+        with patch("scryfall_downloader.maintenance.os.listdir", side_effect=PermissionError("cannot list directory")):
             with self.assertRaises(PermissionError):
                 self.maintain(tidy=True)
         self.assertFalse(self.canonical.exists())
@@ -167,7 +167,7 @@ class MaintenanceTest(unittest.TestCase):
             self.stop.set()
             return listdir(fd)
 
-        with patch("maintenance.os.listdir", side_effect=interrupt), self.assertRaises(DownloadInterrupted):
+        with patch("scryfall_downloader.maintenance.os.listdir", side_effect=interrupt), self.assertRaises(DownloadInterrupted):
             self.maintain(tidy=True, approved=approved)
         self.assertTrue(self.legacy.exists())
         self.assertFalse(self.canonical.exists())
@@ -182,7 +182,7 @@ class MaintenanceTest(unittest.TestCase):
             self.canonical.write_bytes(rival)
             return link(*args, **kwargs)
 
-        with patch("maintenance.os.link", side_effect=race):
+        with patch("scryfall_downloader.maintenance.os.link", side_effect=race):
             result = self.maintain(tidy=True, approved=approved)
         self.assertEqual(result.outcome, "failed")
         self.assertIn(str(self.canonical), result.issue)
@@ -200,7 +200,7 @@ class MaintenanceTest(unittest.TestCase):
             self.legacy.unlink()
             self.legacy.write_bytes(rival)
 
-        with patch("maintenance.os.link", side_effect=race):
+        with patch("scryfall_downloader.maintenance.os.link", side_effect=race):
             result = self.maintain(tidy=True, approved=approved)
         self.assertEqual(result.outcome, "failed")
         self.assertIsNone(result.saved)

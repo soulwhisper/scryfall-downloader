@@ -7,12 +7,12 @@ import sys
 import threading
 import time
 
-from set_catalog import expand_sets
-from upstream import UpstreamError
+from .protocol import DEFAULT_LANGUAGES, TERMINAL
+from .set_catalog import expand_sets
+from .upstream import UpstreamError
 
 
 MAX_SYNC_SETS = 256
-TERMINAL = {"completed", "partial", "failed"}
 
 
 class SyncConflict(Exception):
@@ -42,7 +42,7 @@ class SyncList:
                             id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL)""")
             row = jobs.db.execute("SELECT payload FROM sync_list WHERE id = 1").fetchone()
         self.state = json.loads(row[0]) if row else {
-            "config": {"sets": [], "languages": ["zhs", "en"], "min_quality": None,
+            "config": {"sets": [], "languages": list(DEFAULT_LANGUAGES), "min_quality": None,
                        "refresh_language": False, "refresh_scan": False, "include_tokens": False,
                        "new_releases_days": None, "interval_hours": None},
             "due": None, "last_run_at": None, "last_job_id": None, "last_error": None,

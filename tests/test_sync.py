@@ -9,9 +9,9 @@ from threading import Thread
 import unittest
 from unittest.mock import patch
 
-from set_catalog import SetCatalog
-import sync
-from upstream import UpstreamError
+from scryfall_downloader import sync
+from scryfall_downloader.set_catalog import SetCatalog
+from scryfall_downloader.upstream import UpstreamError
 
 
 def set_row(code, kind="expansion", *, parent=None, days_ago=0, digital=False):
@@ -36,7 +36,7 @@ class CatalogueTest(unittest.TestCase):
                 self.requests.append(args)
                 return Response(json.dumps(page).encode())
 
-        with tempfile.TemporaryDirectory() as root, patch("set_catalog.time.sleep"):
+        with tempfile.TemporaryDirectory() as root, patch("scryfall_downloader.set_catalog.time.sleep"):
             path = Path(root) / "sets.json"
             web = Web()
             catalog = SetCatalog(web, path)
@@ -179,7 +179,7 @@ class SyncTest(unittest.TestCase):
                 return 202, {"id": "first", "status": "queued"}, {}
             return 503, {"error": "queue full"}, {}
 
-        with local_api(respond) as url, patch("sync.time.sleep"):
+        with local_api(respond) as url, patch("scryfall_downloader.sync.time.sleep"):
             result, out, err = run_sync(url, "--round", "test", "one", "two", "three")
         self.assertEqual(result, 1)
         self.assertIn("one: completed; job first", out)

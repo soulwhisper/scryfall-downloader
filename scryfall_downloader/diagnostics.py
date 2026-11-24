@@ -6,7 +6,7 @@ import os
 import threading
 import time
 
-from upstream import NETWORK_ERRORS, UpstreamError
+from .upstream import NETWORK_ERRORS, UpstreamError
 
 
 SAMPLE = "https://api.scryfall.com/cards/b0faa7f2-b547-42c4-a810-839da50dadfe"

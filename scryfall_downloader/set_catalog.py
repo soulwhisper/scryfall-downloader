@@ -3,17 +3,16 @@
 from datetime import date
 import json
 from pathlib import Path
-import re
 import threading
 import time
 from urllib.error import HTTPError
 
-from upstream import NETWORK_ERRORS, UpstreamError, Web, atomic_write, fresh
+from .protocol import SET_CODE
+from .upstream import NETWORK_ERRORS, UpstreamError, Web, atomic_write, fresh
 
 
 SETS_URL = "https://api.scryfall.com/sets"
 MAX_CATALOG_BYTES = 4 * 1024 * 1024
-CODE = re.compile(r"[A-Za-z0-9]{1,12}")
 FIELDS = ("code", "name", "set_type", "parent_set_code", "released_at", "digital", "card_count")
 
 
@@ -33,10 +32,10 @@ def _normalize(rows, *, cached=False):
         if not isinstance(row, dict) or (cached and not all(field in row for field in FIELDS)):
             raise ValueError("invalid set record")
         code, name, kind, parent, released, digital, count = (row.get(field) for field in FIELDS)
-        if (not isinstance(code, str) or not CODE.fullmatch(code)
+        if (not isinstance(code, str) or not SET_CODE.fullmatch(code)
                 or not isinstance(name, str) or not name.strip()
                 or not isinstance(kind, str) or not kind.strip()
-                or (parent is not None and (not isinstance(parent, str) or not CODE.fullmatch(parent)))
+                or (parent is not None and (not isinstance(parent, str) or not SET_CODE.fullmatch(parent)))
                 or type(digital) is not bool or type(count) is not int or count < 0):
             raise ValueError("invalid set record")
         if released is not None and (not isinstance(released, str) or date.fromisoformat(released).isoformat() != released):

@@ -14,7 +14,8 @@ import unittest
 from urllib.parse import parse_qs, urlsplit
 import zlib
 
-from downloader import Jobs, Server
+from scryfall_downloader.jobs import Jobs
+from scryfall_downloader.server import Server
 
 
 IMAGE_ORIGIN = "https://cards.scryfall.io/"

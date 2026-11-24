@@ -1,116 +1,23 @@
-"use strict";
+import { hasToken, post, request, setToken } from "./api.js";
+import { SetPicker, policyControls } from "./sets.js";
+import { $, badge, button, feedback, link, node, stat, utc } from "./ui.js";
 
-const API_PREFIX = "/api/v1";
-const $ = (id) => document.getElementById(id);
 const terminal = new Set(["completed", "partial", "failed"]);
-const labels = {ok: "Ready", unavailable: "Unavailable", not_writable: "Not writable", pending: "Not checked"};
 const operations = {download: "Download", scan: "Library scan", tidy: "Tidy preview"};
 const sources = {api: "On demand", sync_manual: "Saved list", sync_schedule: "Scheduled sync", retry: "Retry", tidy_apply: "Approved tidy"};
-const timer = new Intl.DateTimeFormat(undefined, {dateStyle: "medium", timeStyle: "short", timeZone: "UTC"});
-const utc = (value) => value ? `${timer.format(new Date(value))} UTC` : "—";
 const nameOf = (job) => job.apply ? "Apply renames" : operations[job.operation] || job.operation;
 const jobUrl = (id) => `/jobs/${encodeURIComponent(id)}`;
 const jobHash = (id) => `#jobs/${encodeURIComponent(id)}`;
 
-function node(tag, text, className) {
-  const item = document.createElement(tag);
-  if (text !== undefined) item.textContent = text;
-  if (className) item.className = className;
-  return item;
-}
-
-function badge(state, text) {
-  const item = node("span", text || labels[state] || state, "badge");
-  item.dataset.state = state;
-  return item;
-}
-
-function button(text, action) {
-  const item = node("button", text);
-  item.type = "button";
-  item.addEventListener("click", action);
-  return item;
-}
-
-function link(text, href) {
-  const item = node("a", text);
-  item.href = href;
-  return item;
-}
-
-function stat(label, value) {
-  const item = node("div");
-  const data = node("dd");
-  data.append(value);
-  item.append(node("dt", label), data);
-  return item;
-}
-
-function feedback(message = "", error = false) {
-  $("notice").hidden = !message;
-  $("notice").textContent = message;
-  $("notice").dataset.state = error ? "error" : "info";
-}
-
-let token = "";
 let connected = false;
 let view = "sync";
 let jobId = null;
 let jobDetails = null;
 let syncSaved = null;
 let syncBaseline = "";
-const pendingKeys = new Map();
-
-class RequestError extends Error {
-  constructor(message, status) {
-    super(message);
-    this.status = status;
-  }
-}
-
-async function request(path, {method = "GET", body, key, timeout = 30_000} = {}) {
-  const headers = {Accept: "application/json"};
-  if (token) headers.Authorization = `Bearer ${token}`;
-  if (body !== undefined) headers["Content-Type"] = "application/json";
-  if (key) headers["Idempotency-Key"] = key;
-  const controller = new AbortController();
-  const expiry = setTimeout(() => controller.abort(), timeout);
-  try {
-    const response = await fetch(API_PREFIX + path, {method, headers, credentials: "omit", redirect: "error",
-      signal: controller.signal, body: body === undefined ? undefined : JSON.stringify(body)});
-    let data;
-    try { data = await response.json(); } catch (error) {
-      if (error.name === "AbortError") throw error;
-      throw new RequestError(`The downloader returned HTTP ${response.status} without a JSON response.`, response.status);
-    }
-    if (!response.ok) throw new RequestError(data.error || `Request failed (HTTP ${response.status}).`, response.status);
-    return data;
-  } catch (error) {
-    if (error.name === "AbortError") throw new Error("Request timed out. Retry the same action to recover its receipt.");
-    throw error;
-  } finally {
-    clearTimeout(expiry);
-  }
-}
-
-async function post(path, body = {}) {
-  const signature = path + JSON.stringify(body);
-  if (!pendingKeys.has(signature)) {
-    const random = crypto.getRandomValues(new Uint8Array(16));
-    pendingKeys.set(signature, "console:" + Array.from(random, (value) => value.toString(16).padStart(2, "0")).join(""));
-  }
-  try {
-    const data = await request(path, {method: "POST", body, key: pendingKeys.get(signature)});
-    pendingKeys.delete(signature);
-    return data;
-  } catch (error) {
-    if (error.status >= 400 && error.status < 500) pendingKeys.delete(signature);
-    throw error;
-  }
-}
 
 function accessRequired(message = "") {
-  token = "";
+  setToken("");
   connected = false;
   $("workspace").hidden = true;
   $("navigation").hidden = true;
@@ -142,168 +49,10 @@ async function act(control, action) {
   }
 }
 
-class SetPicker {
-  constructor(prefix, limit, changed) {
-    this.limit = limit;
-    this.changed = changed;
-    this.codes = [];
-    this.rows = [];
-    this.count = 12;
-    this.root = $(`${prefix}-picker`);
-    this.selected = node("ul", undefined, "selected-sets");
-    this.selected.setAttribute("aria-label", "Selected sets");
-    this.query = node("input");
-    this.query.type = "search";
-    this.query.id = `${prefix}-search`;
-    this.query.placeholder = "Name or code, e.g. MSH";
-    this.query.autocomplete = "off";
-    this.filter = node("select");
-    this.filter.id = `${prefix}-filter`;
-    for (const [value, text] of [["all", "All types"], ["paper", "Paper sets"], ["token", "Token sets"], ["digital", "Digital sets"]]) {
-      const option = node("option", text);
-      option.value = value;
-      this.filter.append(option);
-    }
-    const controls = node("div", undefined, "picker-controls");
-    const searchLabel = node("label", "Find a set"); searchLabel.append(this.query);
-    const filterLabel = node("label", "Type"); filterLabel.append(this.filter);
-    controls.append(searchLabel, filterLabel);
-    this.selection = node("p", undefined, "caption");
-    this.results = node("ul", undefined, "set-results");
-    this.results.setAttribute("aria-label", "Matching sets");
-    this.info = node("p", "Loading the catalogue…", "caption");
-    this.more = button("Show more sets", () => { this.count += 24; this.drawMatches(); });
-    this.more.hidden = true;
-    this.retry = button("Reload catalogue", () => loadCatalogue());
-    this.retry.hidden = true;
-    this.manual = button("", () => this.add(this.query.value.trim().toLowerCase()));
-    this.manual.hidden = true;
-    this.root.append(node("h3", "Select sets"), this.selection, this.selected, controls, this.info,
-      this.results, this.more, this.manual, this.retry);
-    this.query.addEventListener("input", () => { this.count = 12; this.drawMatches(); });
-    this.filter.addEventListener("change", () => { this.count = 12; this.drawMatches(); });
-    this.query.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter") return;
-      event.preventDefault();
-      const code = this.query.value.trim().toLowerCase();
-      if (/^[a-z0-9]{1,12}$/.test(code)) this.add(code);
-    });
-    this.drawSelection();
-  }
-
-  setCodes(codes) {
-    this.codes = [...codes];
-    this.drawSelection();
-    this.drawMatches();
-  }
-
-  catalogue(rows, error = "") {
-    this.rows = rows;
-    this.failure = error;
-    this.drawSelection();
-    this.drawMatches();
-  }
-
-  add(code) {
-    if (this.codes.includes(code) || this.codes.length >= this.limit) return;
-    this.setCodes([...this.codes, code]);
-    this.changed();
-    this.query.focus();
-  }
-
-  drawSelection() {
-    this.selection.textContent = `${this.codes.length} / ${this.limit} selected`;
-    this.selected.replaceChildren(...this.codes.map((code) => {
-      const item = node("li");
-      const control = button(`${code.toUpperCase()} ×`, () => {
-        this.setCodes(this.codes.filter((selected) => selected !== code));
-        this.changed();
-        this.query.focus();
-      });
-      const name = this.rows.find((row) => row.code === code)?.name;
-      if (name) control.title = name;
-      control.setAttribute("aria-label", `Remove ${code.toUpperCase()}`);
-      item.append(control);
-      return item;
-    }));
-  }
-
-  drawMatches() {
-    const query = this.query.value.trim().toLowerCase();
-    const filter = this.filter.value;
-    const matched = this.rows.filter((row) => {
-      if (filter === "paper" && (row.digital || row.set_type === "token")) return false;
-      if (filter === "token" && row.set_type !== "token") return false;
-      if (filter === "digital" && !row.digital) return false;
-      return !query || row.code.includes(query) || row.name.toLowerCase().includes(query) || row.parent_set_code === query;
-    });
-    const exact = matched.findIndex((row) => row.code === query);
-    if (exact > 0) matched.unshift(...matched.splice(exact, 1));
-    this.info.textContent = this.failure || (this.rows.length ? (matched.length ?
-      `Showing ${Math.min(matched.length, this.count)} of ${matched.length} matching sets` : "No matching sets") : "Loading the catalogue…");
-    this.more.hidden = matched.length <= this.count;
-    this.retry.hidden = !this.failure;
-    this.manual.hidden = !/^[a-z0-9]{1,12}$/.test(query) || this.rows.some((row) => row.code === query);
-    this.manual.textContent = `Add exact code ${query.toUpperCase()}`;
-    this.manual.disabled = this.codes.includes(query) || this.codes.length >= this.limit;
-    this.results.replaceChildren(...matched.slice(0, this.count).map((row) => {
-      const description = node("div");
-      const meta = [row.code.toUpperCase(), row.set_type.replaceAll("_", " "), row.released_at];
-      if (row.parent_set_code) meta.push(`child of ${row.parent_set_code.toUpperCase()}`);
-      description.append(node("span", row.name, "set-name"), node("span", meta.filter(Boolean).join(" · "), "set-metadata"));
-      const selected = this.codes.includes(row.code);
-      const add = button(selected ? "Added" : "Add", () => this.add(row.code));
-      add.setAttribute("aria-label", `${selected ? "Added" : "Add"} ${row.code.toUpperCase()}`);
-      add.disabled = selected || this.codes.length >= this.limit;
-      const item = node("li");
-      item.append(description, add);
-      return item;
-    }));
-  }
-}
-
-function policyControls(prefix) {
-  const quality = node("select");
-  quality.id = `${prefix}-quality`;
-  const qualities = [["", "No minimum · keep valid files"], ["small", "Small · 146 × 204"], ["normal", "Normal · 488 × 680"],
-    ["large", "Large · 672 × 936"], ["png", "Native PNG · 744 × 1040"]];
-  for (const [value, text] of qualities) { const option = node("option", text); option.value = value; quality.append(option); }
-  const languages = node("input");
-  languages.id = `${prefix}-languages`;
-  languages.type = "text";
-  languages.value = "zhs, en";
-  languages.required = true;
-  languages.spellcheck = false;
-  const langLabel = node("label", "Languages in priority order");
-  langLabel.append(languages, node("small", "Comma-separated codes. zhs = Simplified Chinese; en = English."));
-  const qualityLabel = node("label", "Minimum quality"); qualityLabel.append(quality);
-  const flags = [["refresh_language", "Replace with a verified preferred language"], ["refresh_scan", "Refresh when Scryfall has a newer scan"]];
-  const controls = {};
-  const root = $(`${prefix}-policy`);
-  root.append(langLabel, qualityLabel);
-  for (const [name, text] of flags) {
-    const label = node("label", undefined, "check");
-    controls[name] = node("input");
-    controls[name].type = "checkbox";
-    controls[name].id = `${prefix}-${name.replace("_", "-")}`;
-    label.append(controls[name], text);
-    root.append(label);
-  }
-  return {
-    read: () => ({languages: languages.value.split(",").map((language) => language.trim()).filter(Boolean),
-      min_quality: quality.value || null, refresh_language: controls.refresh_language.checked, refresh_scan: controls.refresh_scan.checked}),
-    fill: (policy) => {
-      languages.value = policy.languages.join(", ");
-      quality.value = policy.min_quality || "";
-      for (const [name] of flags) controls[name].checked = policy[name];
-    },
-  };
-}
-
 const syncPolicy = policyControls("sync");
 const libraryPolicy = policyControls("library");
-const syncPicker = new SetPicker("sync", 100, updateSyncButtons);
-const libraryPicker = new SetPicker("library", 10, () => {});
+const syncPicker = new SetPicker("sync", 100, updateSyncButtons, loadCatalogue);
+const libraryPicker = new SetPicker("library", 10, () => {}, loadCatalogue);
 
 let loadingCatalogue = false;
 async function loadCatalogue() {
@@ -637,7 +386,7 @@ async function connect() {
     $("access").hidden = true;
     $("workspace").hidden = false;
     $("navigation").hidden = false;
-    $("sign-out").hidden = !token;
+    $("sign-out").hidden = !hasToken();
     $("reconnect").hidden = true;
     $("connection").textContent = "Connected";
     $("connection").dataset.state = "ok";
@@ -645,7 +394,7 @@ async function connect() {
     navigate();
     loadCatalogue();
   } catch (error) {
-    if (error.status === 401) accessRequired(token ? "The API token was not accepted." : "");
+    if (error.status === 401) accessRequired(hasToken() ? "The API token was not accepted." : "");
     else {
       $("connection").textContent = "Disconnected";
       $("connection").dataset.state = "unavailable";
@@ -657,7 +406,7 @@ async function connect() {
 
 $("access-form").addEventListener("submit", (event) => {
   event.preventDefault();
-  token = $("api-token").value.trim();
+  setToken($("api-token").value.trim());
   $("api-token").value = "";
   act(event.submitter || $("access-form").querySelector("button"), connect);
 });

@@ -17,16 +17,10 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-from set_catalog import expand_sets
+from .protocol import API_PREFIX, BEARER_TOKEN, DEFAULT_LANGUAGES, DEFAULT_PORT, TERMINAL, normalize_languages
+from .set_catalog import expand_sets
 
 
-API_PREFIX = "/api/v1"
-DEFAULT_LANGUAGES = ["zhs", "en"]
-LANGUAGE_ALIASES = {
-    "zh-cn": "zhs", "zhcn": "zhs", "zh-hans": "zhs",
-    "zh-tw": "zht", "zhtw": "zht", "zh-hant": "zht",
-}
-TERMINAL = {"completed", "partial", "failed"}
 ACTIVE = {"queued", "running", "pausing", "paused"}
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
@@ -141,10 +135,9 @@ def select_sets(args, rows, today):
 
 
 def policy_for(args):
-    languages = [lang.strip().lower().replace("_", "-") for lang in args.language or DEFAULT_LANGUAGES]
     return {
         "operation": "download", "apply": False,
-        "languages": list(dict.fromkeys(LANGUAGE_ALIASES.get(lang, lang) for lang in languages)),
+        "languages": normalize_languages(args.language or DEFAULT_LANGUAGES),
         "min_quality": args.min_quality, "refresh_language": args.refresh_language,
         "refresh_scan": args.refresh_scan,
     }
@@ -235,7 +228,7 @@ def main(argv=None):
     today = datetime.now(timezone.utc).date()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sets", metavar="SET", nargs="*")
-    parser.add_argument("--api", default="http://127.0.0.1:8765",
+    parser.add_argument("--api", default=f"http://127.0.0.1:{DEFAULT_PORT}",
                         help=f"downloader base URL, without {API_PREFIX} (default: %(default)s)")
     parser.add_argument("--include-tokens", action="store_true", help="also sync token sets whose catalog parent is selected")
     parser.add_argument("--new-releases-days", type=int, metavar="N", help="also sync paper core and expansion sets released in the last N days (UTC)")
@@ -262,7 +255,7 @@ def main(argv=None):
     except ValueError:
         parser.error("--api must be an HTTP(S) URL without credentials, query or fragment")
     token = os.environ.get("SCRYFALL_API_TOKEN")
-    if token and not re.fullmatch(r"[A-Za-z0-9._~+/-]+=*", token):
+    if token and not BEARER_TOKEN.fullmatch(token):
         parser.error("SCRYFALL_API_TOKEN is not a valid Bearer token")
     try:
         return sync(API(args.api, token, time.monotonic() + args.wait), args, today)
