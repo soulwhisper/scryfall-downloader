@@ -87,7 +87,7 @@ class Jobs:
             self.db.execute("""CREATE TABLE IF NOT EXISTS images (
                 stem TEXT PRIMARY KEY, url TEXT, suffix TEXT NOT NULL,
                 size INTEGER NOT NULL, sha256 TEXT, language TEXT,
-                file_name TEXT, source_id TEXT, image_updated_at TEXT
+                file_name TEXT, source_id TEXT, image_updated_at TEXT, printing_key TEXT
             )""")
             if migrate:
                 checksum = "sha256" if "sha256" in columns else "NULL"
@@ -95,7 +95,7 @@ class Jobs:
                                     SELECT stem, url, suffix, size, {checksum} FROM legacy_images""")
                 self.db.execute("DROP TABLE legacy_images")
             elif columns:
-                for column in ("file_name", "source_id", "image_updated_at"):
+                for column in ("file_name", "source_id", "image_updated_at", "printing_key"):
                     if column not in columns:
                         self.db.execute(f"ALTER TABLE images ADD COLUMN {column} TEXT")
             self.db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
@@ -496,7 +496,7 @@ class Jobs:
                     if asset is None:
                         break
                     row = self.db.execute("""SELECT url, suffix, size, sha256, language, file_name,
-                                                    source_id, image_updated_at FROM images WHERE stem = ?""",
+                                                    source_id, image_updated_at, printing_key FROM images WHERE stem = ?""",
                                           (asset.stem,)).fetchone()
                     previous = SavedImage(*row) if row else None
                     args = (self.root, asset, previous, self.interrupt, job["min_quality"], self.webp)
@@ -530,10 +530,10 @@ class Jobs:
                 with self.ready, self.db:
                     if saved is not None and saved != previous:
                         self.db.execute("""INSERT OR REPLACE INTO images
-                                        (stem, url, suffix, size, sha256, language, file_name, source_id, image_updated_at)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                        (stem, url, suffix, size, sha256, language, file_name, source_id, image_updated_at, printing_key)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                                         (stem, saved.url, saved.suffix, saved.size, saved.sha256, saved.language,
-                                         saved.file_name, saved.source_id, saved.image_updated_at))
+                                         saved.file_name, saved.source_id, saved.image_updated_at, saved.printing_key))
                     if rename is not None:
                         self.db.execute("INSERT INTO tidy_renames VALUES (?, ?, ?, ?, ?, ?)",
                                         (job["id"], code, stem, rename.source, rename.target, rename.sha256))

@@ -1,6 +1,6 @@
 """Scryfall transport, on-disk metadata cache, and native image downloads."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 import hashlib
@@ -178,6 +178,8 @@ class Asset:
     sources: tuple[Source, ...]
     legacy_border: bool = False
     languages: tuple[str, ...] = ()
+    printing_key: str | None = None
+    inferred: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +192,7 @@ class SavedImage:
     file_name: str | None = None
     source_id: str | None = None
     image_updated_at: str | None = None
+    printing_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +202,15 @@ class LocalImage:
     saved: SavedImage | None
     shape: ImageSize | None
     legacy: bool
+    art_match: bool | None = True
+
+    @property
+    def art_issue(self) -> str | None:
+        if self.art_match is None:
+            return "cannot verify the printing for this Forge art slot; file left unchanged"
+        if not self.art_match:
+            return "image belongs to a different printing or face"
+        return None
 
 
 class BelowQuality(Exception):
@@ -250,7 +262,8 @@ def _read_local(path: Path, info: os.stat_result, previous: SavedImage | None,
                 source_id = source_id or source.source_id
                 updated = updated or source.image_updated_at
                 break
-    return SavedImage(previous.url, suffix, info.st_size, digest, language, file_name, source_id, updated), shape
+    return SavedImage(previous.url, suffix, info.st_size, digest, language, file_name, source_id, updated,
+                      previous.printing_key), shape
 
 
 def _image_path(stem: Path, suffix: str) -> Path:
@@ -273,6 +286,31 @@ def _image_stem(root: Path, asset: Asset) -> Path:
     return root / relative
 
 
+def _check_art(asset: Asset, saved: SavedImage) -> tuple[SavedImage, bool | None]:
+    key = asset.printing_key
+    if key is None or saved.printing_key == key:
+        return saved, True
+    if saved.url is None:
+        # Manually installed images can use a confirmed Forge key, not a guess.
+        return saved, None if asset.inferred else True
+
+    # Backfill pre-upgrade receipts from the exact CDN asset, including its
+    # face. Ignore cache-busting query strings, not the format or path.
+    old_url = saved.url.partition("?")[0]
+    same_language = same_print = False
+    for source in asset.sources:
+        if (saved.source_id is None or saved.source_id == source.source_id) and source.url.partition("?")[0] == old_url:
+            return replace(saved, printing_key=key), True
+        if source.source_id is not None:
+            same_language |= source.language == saved.language
+            same_print |= source.source_id == saved.source_id
+    if saved.printing_key is not None or (saved.source_id is not None and same_language and not same_print):
+        return saved, False
+    # A legacy source filtered out by the current language policy is not
+    # evidence of wrong art. Do not adopt it or overwrite it on speculation.
+    return saved, None
+
+
 def _iter_local(stem: Path, asset: Asset, previous: SavedImage | None, stop, webp: bool):
     suffixes = IMAGE_SUFFIXES if webp else IMAGE_SUFFIXES[:-1]
     stems = (stem, _image_path(stem, "border")) if asset.legacy_border else (stem,)
@@ -287,11 +325,14 @@ def _iter_local(stem: Path, asset: Asset, previous: SavedImage | None, stop, web
                 continue
             if not stat.S_ISREG(info.st_mode):
                 raise OSError(f"Not a regular file: {path}")
+            art_match = True
             try:
                 saved, shape = _read_local(path, info, previous, asset.sources, legacy)
             except InvalidImage:
                 saved = shape = None
-            yield LocalImage(path, info, saved, shape, legacy)
+            else:
+                saved, art_match = _check_art(asset, saved)
+            yield LocalImage(path, info, saved, shape, legacy, art_match)
 
 
 def local_images(root: Path, asset: Asset, previous: SavedImage | None, stop, webp: bool) -> list[LocalImage]:
@@ -416,11 +457,12 @@ def download(
     web: Web, root: Path, asset: Asset, previous: SavedImage | None, stop, minimum: str | None,
     webp: bool = False, refresh_language: bool = False, refresh_scan: bool = False,
 ) -> tuple[str, SavedImage | None, bool]:
-    """Reuse Forge's lookup order unless an explicit policy allows a verified replacement."""
+    """Reuse a valid image for the planned printing, or commit a verified replacement."""
     stem = _image_stem(root, asset)
     known = {}
     valid = []
     first_valid = selected = None
+    stale = None
     legacy_seen = False
     for image in _iter_local(stem, asset, previous, stop, webp):
         known[image.path] = image
@@ -428,6 +470,11 @@ def download(
         selectable = not image.legacy or not legacy_seen
         legacy_seen |= image.legacy
         if image.shape is None:
+            continue
+        if image.art_match is None:
+            raise UpstreamError(f"{image.path}: {image.art_issue}")
+        if not image.art_match:
+            stale = image
             continue
         if selectable and first_valid is None:
             first_valid = image
@@ -442,9 +489,15 @@ def download(
     if selected is None:
         selected = first_valid
 
+    def paths_to_retire(path):
+        paths = tuple(_masking_paths(stem, path, webp))
+        if stale is not None and not stale.legacy and stale.path != path and stale.path not in paths:
+            paths += (stale.path,)
+        return paths
+
     def cached():
         check_interrupted(stop)
-        masking = tuple(_masking_paths(stem, selected.path, webp))
+        masking = paths_to_retire(selected.path)
         if any(path in known for path in masking):
             _unchanged(selected.path, selected.info)
             for path in masking:
@@ -468,7 +521,7 @@ def download(
     failure = None
     for source in sources:
         path = _image_path(stem, source.suffix)
-        masking = tuple(_masking_paths(stem, path, webp))
+        masking = paths_to_retire(path)
         refresh = False
         if selected:
             same_url = any(source.url == image.saved.url for image in valid)
@@ -519,9 +572,12 @@ def download(
             continue
         saved, shape = result
         _retire_masking(masking, known)
+        saved = replace(saved, printing_key=asset.printing_key) if asset.printing_key is not None else saved
         return "downloaded", saved, minimum is not None and not shape.meets(minimum)
     if selected is not None:
         return cached()
     if failure is not None:
         raise failure
+    if stale is not None:
+        raise UpstreamError(f"{stale.path}: {stale.art_issue}; no usable replacement")
     return "unavailable", None, False
