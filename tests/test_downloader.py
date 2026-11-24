@@ -14,7 +14,8 @@ import unittest
 from urllib.parse import parse_qs, urlsplit
 import zlib
 
-from downloader import Jobs, Server
+from scryfall_downloader.jobs import Jobs
+from scryfall_downloader.server import Server
 
 
 IMAGE_ORIGIN = "https://cards.scryfall.io/"
@@ -53,13 +54,16 @@ def printing(number, lang, name, *scans):
 
 
 class Upstream:
-    def __init__(self, cards, scans):
+    def __init__(self, cards, scans, *, sets=()):
         self.cards = cards
         self.scans = scans
         self.image_requests = []
+        self.sets = sets
 
     def open(self, url, host, _accept):
         if host == "api.scryfall.com":
+            if urlsplit(url).path == "/sets":
+                return Response(json.dumps({"object": "list", "data": self.sets, "has_more": False}).encode())
             query = parse_qs(urlsplit(url).query)["q"][0]
             cards = [card for card in self.cards if f"lang:{card['lang']}" in query]
             return Response(json.dumps({"object": "list", "data": cards, "has_more": False}).encode())
@@ -85,7 +89,7 @@ class DownloaderTest(unittest.TestCase):
         jobs.web.open = upstream.open
         with Server(("127.0.0.1", 0), jobs, token) as server:
             thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
-            jobs.worker.start()
+            jobs.start()
             thread.start()
             try:
                 yield server.server_port
@@ -100,11 +104,40 @@ class DownloaderTest(unittest.TestCase):
             headers = dict(headers or {})
             if body is not None:
                 headers["Content-Type"] = "application/json"
-            conn.request(method, path, body, headers)
+            conn.request(method, "/api/v1" + path, body, headers)
             with conn.getresponse() as response:
                 data = json.load(response)
                 self.assertEqual(response.status, expect, data)
                 return data
+
+    def test_default_portal_and_versioned_job_location(self):
+        upstream = Upstream([printing(1, "en", "Oak", "oak.png")], {"oak.png": pixel_png(16)})
+        body = b'{"sets":["tst"]}'
+        headers = {"Authorization": "Bearer console-test-token", "Content-Type": "application/json"}
+        with self.server(upstream, "1 C Oak\n", token="console-test-token") as port, \
+             closing(HTTPConnection("127.0.0.1", port, timeout=3)) as conn:
+            conn.request("GET", "/")
+            with conn.getresponse() as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.getheader("Content-Type"), "text/html; charset=utf-8")
+                response.read()
+            for method, path, payload in (("GET", "/jobs", None), ("GET", "/health", None),
+                                          ("PUT", "/sync-list", body), ("POST", "/jobs", body),
+                                          ("GET", "/api/v10/jobs", None)):
+                with self.subTest(method=method, path=path):
+                    conn.request(method, path, payload, headers)
+                    with conn.getresponse() as response:
+                        self.assertEqual(response.status, 404, response.read())
+            conn.request("POST", "/api/v1/jobs", body, headers)
+            with conn.getresponse() as response:
+                self.assertEqual(response.status, 202)
+                job = json.load(response)
+                location = response.getheader("Location")
+            self.assertEqual(location, f"/api/v1/jobs/{job['id']}")
+            conn.request("GET", location, headers=headers)
+            with conn.getresponse() as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(json.load(response)["id"], job["id"])
 
     def wait_for(self, port, path, status, *, headers=None):
         deadline = time.monotonic() + 6
@@ -304,18 +337,112 @@ class DownloaderTest(unittest.TestCase):
 
             scan = run("partial", operation="scan", min_quality="large")
             self.assertEqual((scan["missing"], scan["legacy"], scan["below_quality"]), (1, 1, 1))
-            preview = run("partial", operation="tidy")
-            self.assertEqual((preview["legacy"], preview["tidied"]), (1, 0))
+            self.api(port, "POST", "/jobs", {"sets": ["tst"], "operation": "tidy", "apply": True}, expect=400)
+            preview = self.api(port, "POST", "/jobs", {"sets": ["tst"], "operation": "tidy"}, expect=202)
+            path = f"/jobs/{preview['id']}"
+            progress = self.wait_for(port, path, "partial")["sets"]["tst"]
+            self.assertEqual((progress["legacy"], progress["renames"]), (1, 1))
+            plan = self.api(port, "GET", path + "/renames")
+            self.assertEqual(plan["renames"], [{"set": "tst", "source": "pics/cards/FT/Oak.fullborder.png",
+                                               "target": "pics/cards/FT/Oak.full.png"}])
             self.assertEqual(legacy.read_bytes(), card)
             self.assertFalse(canonical.exists())
             self.assertEqual(upstream.image_requests, [])
-            tidy = run("partial", operation="tidy", apply=True)
+            applied = self.api(port, "POST", path + "/apply", {}, expect=202)
+            tidy = self.wait_for(port, f"/jobs/{applied['id']}", "completed")["sets"]["tst"]
+            self.assertEqual(self.api(port, "POST", path + "/apply", {}, expect=202)["id"], applied["id"])
             self.assertEqual(tidy["tidied"], 1)
             self.assertEqual(canonical.read_bytes(), card)
             self.assertFalse(legacy.exists())
             repaired = run("completed")
             self.assertEqual((repaired["cached"], repaired["downloaded"]), (1, 1))
             self.assertEqual(upstream.image_requests, ["pine.png"])
+
+    def test_tidy_plan_pages_and_unreviewed_files_are_not_applied(self):
+        card = pixel_png(93)
+        before = [f"Card {index:03}" for index in range(101)]
+        extra = "Previously absent"
+        folder = self.root / "pics" / "cards" / "FT"
+        folder.mkdir(parents=True)
+        for name in before:
+            (folder / (name + ".fullborder.png")).write_bytes(card)
+        cards = [printing(i, "en", name, f"{i}.png") for i, name in enumerate([*before, extra], 1)]
+        rows = "".join(f"{i} C {name}\n" for i, name in enumerate([*before, extra], 1))
+        with self.server(Upstream(cards, {}), rows) as port:
+            # Make the first plan span two pages, then replace one source and add a different valid
+            # filename after review. Only the remaining reviewed files should move.
+            preview = self.api(port, "POST", "/jobs", {"sets": ["tst"], "operation": "tidy"}, expect=202)
+            path = f"/jobs/{preview['id']}"
+            self.wait_for(port, path, "partial")
+            first = self.api(port, "GET", path + "/renames")
+            last = self.api(port, "GET", path + f"/renames?offset={first['next_offset']}")
+            all_sources = [Path(item["source"]).name for item in first["renames"] + last["renames"]]
+            self.assertEqual(all_sources, [name + ".fullborder.png" for name in before])
+            self.assertIsNone(last["next_offset"])
+            changed = pixel_png(94)
+            (folder / (before[0] + ".fullborder.png")).write_bytes(changed)
+            (folder / (extra + ".fullborder.png")).write_bytes(card)
+            applied = self.api(port, "POST", path + "/apply", {}, expect=202)
+            progress = self.wait_for(port, f"/jobs/{applied['id']}", "partial")["sets"]["tst"]
+            self.assertEqual((progress["tidied"], progress["failed"]), (100, 1))
+        self.assertEqual((folder / (before[0] + ".fullborder.png")).read_bytes(), changed)
+        self.assertFalse((folder / (before[0] + ".full.png")).exists())
+        self.assertTrue((folder / (extra + ".fullborder.png")).exists())
+        self.assertTrue((folder / (before[-1] + ".full.png")).exists())
+
+    def test_saved_sync_list_and_overdue_schedule_survive_restart(self):
+        cards = [printing(1, "en", "Oak", "oak.png"),
+                 dict(printing(1, "en", "Goblin", "token.png"), set="tsub", set_type="token")]
+        sets = [{"code": "tst", "name": "Local Test Set", "set_type": "expansion", "parent_set_code": None,
+                 "released_at": "2000-01-01", "digital": False, "card_count": 1},
+                {"code": "tsub", "name": "Exact token child", "set_type": "token", "parent_set_code": "tst",
+                 "released_at": "2000-01-01", "digital": False, "card_count": 1}]
+        upstream = Upstream(cards, {"oak.png": pixel_png(3), "token.png": pixel_png(4)}, sets=sets)
+        config = {"sets": ["TST"], "languages": ["zh-CN", "en"], "include_tokens": True, "interval_hours": 1}
+        rows = "1 C Oak\n"
+        with self.server(upstream, rows) as port:
+            self.api(port, "PUT", "/sync-list", config, expect=403, headers={"Origin": "https://another.example"})
+            saved = self.api(port, "PUT", "/sync-list", config)
+            self.assertIsNotNone(saved["next_run_at"])
+            self.assertEqual(saved["next_run_at"], self.api(port, "PUT", "/sync-list", config)["next_run_at"])
+            manual = self.api(port, "POST", "/sync-list/run", {}, expect=202, headers={"Idempotency-Key": "test.sync"})
+            self.assertEqual(set(manual["sets"]), {"tst", "tsub"})
+            self.assertEqual(manual["languages"], ["zhs", "en"])
+            self.wait_for(port, f"/jobs/{manual['id']}", "completed")
+        with closing(sqlite3.connect(self.root / "images.sqlite3")) as db, db:
+            state, = db.execute("SELECT payload FROM sync_list").fetchone()
+            db.execute("UPDATE sync_list SET payload = ?", (json.dumps({**json.loads(state), "due": 1}),))
+        with self.server(upstream, rows) as port:
+            deadline = time.monotonic() + 6
+            while True:
+                loaded = self.api(port, "GET", "/sync-list")
+                if loaded["last_job_id"] != manual["id"] and loaded["last_job_id"] is not None:
+                    break
+                self.assertLess(time.monotonic(), deadline, loaded)
+                time.sleep(0.01)
+            automatic = self.wait_for(port, f"/jobs/{loaded['last_job_id']}", "completed")
+            self.assertEqual(automatic["source"], "sync_schedule")
+            self.assertEqual({name: automatic["sets"][name]["cached"] for name in automatic["sets"]}, {"tst": 1, "tsub": 1})
+            self.assertEqual(loaded["sets"], ["tst"])
+            self.assertGreater(loaded["next_run_at"], loaded["last_run_at"])
+            replay = self.api(port, "POST", "/sync-list/run", {}, expect=202, headers={"Idempotency-Key": "test.sync"})
+            self.assertEqual(replay["id"], manual["id"])
+            self.assertEqual({job["id"] for job in self.api(port, "GET", "/jobs?summary=1")["jobs"]},
+                             {manual["id"], automatic["id"]})
+        self.assertCountEqual(upstream.image_requests, ["oak.png", "token.png"])
+
+    def test_retry_submits_only_unfinished_sets(self):
+        cards = [printing(1, "en", "Oak", "oak.png"), dict(printing(1, "en", "Pine", "pine.png"), set="other")]
+        upstream = Upstream(cards, {"oak.png": pixel_png(5)})
+        with self.server(upstream, "1 C Oak\n") as port:
+            original = self.api(port, "POST", "/jobs", {"sets": ["tst", "other"]}, expect=202)
+            path = f"/jobs/{original['id']}"
+            self.wait_for(port, path, "partial")
+            upstream.scans["pine.png"] = pixel_png(6)
+            retry = self.api(port, "POST", path + "/retry", {}, expect=202)
+            fixed = self.wait_for(port, f"/jobs/{retry['id']}", "completed")
+            self.assertEqual(list(fixed["sets"]), ["other"])
+        self.assertEqual(upstream.image_requests, ["oak.png", "pine.png", "pine.png"])
 
 
 if __name__ == "__main__":

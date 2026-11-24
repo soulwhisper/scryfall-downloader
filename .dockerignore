@@ -1,10 +1,5 @@
 *
-!Dockerfile
-!downloader.py
-!forge.py
-!imagefiles.py
-!maintenance.py
-!ownership.py
-!set_catalog.py
-!sync.py
-!upstream.py
+!docker/
+!LICENSE
+!scryfall_downloader/
+**/__pycache__/

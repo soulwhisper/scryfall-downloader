@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import stat
 
-from imagefiles import IMAGE_SUFFIXES
+from .imagefiles import IMAGE_SUFFIXES
 
 
 def set_identity(uid: int, gid: int):

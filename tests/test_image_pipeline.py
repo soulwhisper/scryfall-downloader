@@ -8,9 +8,9 @@ from threading import Event
 import unittest
 import zlib
 
-from forge import Edition, plan_images
-from imagefiles import InvalidImage, image_size
-from upstream import Asset, Source, download, local_images
+from scryfall_downloader.forge import Edition, plan_images
+from scryfall_downloader.imagefiles import InvalidImage, image_size
+from scryfall_downloader.upstream import Asset, Source, download, local_images
 
 
 ORIGIN = "https://cards.scryfall.io/"

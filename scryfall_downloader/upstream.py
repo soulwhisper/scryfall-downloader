@@ -16,7 +16,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
 
-from imagefiles import IMAGE_SUFFIXES, QUALITY, ImageSize, InvalidImage, image_size
+from .imagefiles import IMAGE_SUFFIXES, QUALITY, ImageSize, InvalidImage, image_size
 
 
 SEARCH_URL = "https://api.scryfall.com/cards/search"

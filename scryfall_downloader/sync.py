@@ -1,7 +1,7 @@
 """Run a one-shot Scryfall downloader sync against the headless REST API."""
 
 import argparse
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from hashlib import sha256
 import http.client
 import json
@@ -17,13 +17,10 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
+from .protocol import API_PREFIX, BEARER_TOKEN, DEFAULT_LANGUAGES, DEFAULT_PORT, TERMINAL, default_port, normalize_languages
+from .set_catalog import expand_sets
 
-DEFAULT_LANGUAGES = ["zhs", "en"]
-LANGUAGE_ALIASES = {
-    "zh-cn": "zhs", "zhcn": "zhs", "zh-hans": "zhs",
-    "zh-tw": "zht", "zhtw": "zht", "zh-hant": "zht",
-}
-TERMINAL = {"completed", "partial", "failed"}
+
 ACTIVE = {"queued", "running", "pausing", "paused"}
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
@@ -85,6 +82,7 @@ class API:
         return response
 
     def _request(self, path, payload, key):
+        path = API_PREFIX + path
         headers = self.headers.copy()
         data = None
         if payload is not None:
@@ -127,39 +125,19 @@ def select_sets(args, rows, today):
         not isinstance(row, dict) or not isinstance(row.get("code"), str)
         or not re.fullmatch(r"[a-z0-9]{1,12}", row["code"]) for row in rows
     ):
-        raise SyncError("GET /sets returned an invalid set catalogue")
-    catalog = {row["code"]: row for row in rows}
-    explicit = list(dict.fromkeys(code.strip().lower() for code in args.sets))
-    unknown = [code for code in explicit if code not in catalog]
-    if unknown:
-        raise SyncError("Unknown Scryfall set code(s): " + ", ".join(map(repr, unknown)))
-    selected = dict.fromkeys(explicit)
-    if args.new_releases_days is not None:
-        for code, row in sorted(catalog.items()):
-            if row.get("digital") is not False or row.get("set_type") not in ("core", "expansion"):
-                continue
-            released = row.get("released_at")
-            if released is None:
-                continue
-            try:
-                age = (today - date.fromisoformat(released)).days
-            except (ValueError, TypeError):
-                raise SyncError(f"GET /sets returned an invalid release date for {code}") from None
-            if 0 <= age <= args.new_releases_days:
-                selected[code] = None
-    if args.include_tokens:
-        parents = set(selected)
-        for code, row in sorted(catalog.items()):
-            if row.get("set_type") == "token" and row.get("parent_set_code") in parents:
-                selected[code] = None
-    return list(selected)
+        raise SyncError("Downloader returned an invalid set catalogue")
+    explicit = (code.strip().lower() for code in args.sets)
+    try:
+        return expand_sets(rows, explicit, include_tokens=args.include_tokens,
+                           new_releases_days=args.new_releases_days, today=today)
+    except ValueError as exc:
+        raise SyncError(str(exc)) from None
 
 
 def policy_for(args):
-    languages = [lang.strip().lower().replace("_", "-") for lang in args.language or DEFAULT_LANGUAGES]
     return {
         "operation": "download", "apply": False,
-        "languages": list(dict.fromkeys(LANGUAGE_ALIASES.get(lang, lang) for lang in languages)),
+        "languages": normalize_languages(args.language or DEFAULT_LANGUAGES),
         "min_quality": args.min_quality, "refresh_language": args.refresh_language,
         "refresh_scan": args.refresh_scan,
     }
@@ -182,10 +160,10 @@ def job_state(job):
 def existing_job(api, code, policy):
     jobs = api.request("/jobs").get("jobs")
     if not isinstance(jobs, list):
-        raise SyncError("GET /jobs returned an invalid job list")
+        raise SyncError("Downloader returned an invalid job list")
     for job in jobs:
         if not isinstance(job, dict) or not isinstance(job.get("sets"), dict):
-            raise SyncError("GET /jobs returned an invalid job record")
+            raise SyncError("Downloader returned an invalid job record")
         job_id, status = job_state(job)
         if (status in ACTIVE and code in job["sets"]
                 and all(job.get(field) == value for field, value in policy.items())):
@@ -195,7 +173,7 @@ def existing_job(api, code, policy):
 
 def report(code, job_id, status):
     label = f"pending ({status})" if status in ACTIVE and status != "paused" else status
-    print(f"{code}: {label}; job {job_id} (GET /jobs/{job_id})")
+    print(f"{code}: {label}; job {job_id} (GET {API_PREFIX}/jobs/{job_id})")
     return status == "completed"
 
 
@@ -232,7 +210,7 @@ def sync(api, args, today):
             success = report(code, job_id, status) and success
         except SyncError as exc:
             if job_id is not None:
-                advice = f"server job left intact; check GET /jobs/{job_id}"
+                advice = f"server job left intact; check GET {API_PREFIX}/jobs/{job_id}"
             elif isinstance(exc, HTTPFailure) and exc.status == 503:
                 advice = f"service unavailable or queue full; {retry} when ready"
             elif submitted and (not isinstance(exc, HTTPFailure) or exc.status >= 500):
@@ -250,7 +228,8 @@ def main(argv=None):
     today = datetime.now(timezone.utc).date()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sets", metavar="SET", nargs="*")
-    parser.add_argument("--api", default="http://127.0.0.1:8765")
+    parser.add_argument("--api", help=f"downloader base URL, without {API_PREFIX} "
+                        f"(default: loopback on DEFAULT_PORT, or {DEFAULT_PORT} if unset)")
     parser.add_argument("--include-tokens", action="store_true", help="also sync token sets whose catalog parent is selected")
     parser.add_argument("--new-releases-days", type=int, metavar="N", help="also sync paper core and expansion sets released in the last N days (UTC)")
     parser.add_argument("--language", action="append", metavar="CODE", help="language in priority order (repeatable; default zhs, en)")
@@ -268,6 +247,11 @@ def main(argv=None):
         parser.error("--wait must be a positive finite number of seconds")
     if not args.round.strip():
         parser.error("--round must not be blank")
+    if args.api is None:
+        try:
+            args.api = f"http://127.0.0.1:{default_port()}"
+        except ValueError as exc:
+            parser.error(str(exc))
     try:
         parts = urlsplit(args.api)
         if (parts.scheme not in ("http", "https") or not parts.hostname or parts.port == 0
@@ -276,7 +260,7 @@ def main(argv=None):
     except ValueError:
         parser.error("--api must be an HTTP(S) URL without credentials, query or fragment")
     token = os.environ.get("SCRYFALL_API_TOKEN")
-    if token and not re.fullmatch(r"[A-Za-z0-9._~+/-]+=*", token):
+    if token and not BEARER_TOKEN.fullmatch(token):
         parser.error("SCRYFALL_API_TOKEN is not a valid Bearer token")
     try:
         return sync(API(args.api, token, time.monotonic() + args.wait), args, today)
