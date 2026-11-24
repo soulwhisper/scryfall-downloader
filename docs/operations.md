@@ -12,8 +12,8 @@ Open `/` on the downloader's origin. The console uses JavaScript; the
 - **Library operations:** Download, repair, upgrade, or scan selected sets
   without changing the saved list. See the [library guide](library.md) for
   integrity checks and [approving legacy renames](library.md#legacy-filename-approvals).
-  **Run full archive** keeps all available printings and creates Forge-named
-  copies; it does not use or change the saved list.
+  **Sync full catalogue** visits every set and writes only Forge image keys;
+  it does not use or change the saved list.
 - **Jobs:** Open a receipt to follow progress and review per-set findings.
   [Pause or resume jobs and retry unfinished sets](api.md#job-controls).
 - **Diagnostics:** Check the worker and scheduler, process UID/GID, the WebP
@@ -23,7 +23,7 @@ Open `/` on the downloader's origin. The console uses JavaScript; the
 
 ## First-start archive
 
-Use `--archive-all` to queue the [full catalogue archive](library.md#full-catalogue-archive)
+Use `--archive-all` to queue the [full catalogue sync](library.md#full-catalogue-sync)
 once for a new `--data` directory. It runs in the same downloader process
 and needs neither cron nor a browser. The startup marker and job survive
 restarts. Interrupted work resumes; an explicitly paused job stays paused.
@@ -31,10 +31,10 @@ Other queued jobs may run between archive sets.
 
 The first metadata download and complete image collection can take
 substantial time and disk space. Keep `cache/scryfall/` writable for an
-on-disk index and its replacement. Review the **Full archive** job under
+on-disk index and its replacement. Review the **Full catalogue sync** job under
 **Jobs**; if it reports a failed import, use **Retry unfinished sets**.
-To include newer printings after the first run, start another archive
-from the console or `POST /api/v1/archive/run`. The bulk cache lasts 24 hours.
+To include new printings after the first run, use the console or
+`POST /api/v1/archive/run`. The bulk cache lasts 24 hours.
 Use a staging data directory if you keep a separate Forge library.
 
 ## Built-in schedule
@@ -176,9 +176,9 @@ sudo python3 -m scryfall_downloader --data "$PWD/data" \
 ```
 
 Remove `--dry-run` to apply. The command runs offline, only adjusting
-mismatched ownership in `pics/cards`, `pics/tokens`, `pics/printings`, their
-parent `pics`, and `extras`. It does not follow symlinks or change hard-linked
-images, non-image files, permission bits, names, or SQLite ownership.
+mismatched ownership in `pics/cards`, `pics/tokens`, and their parent `pics`.
+It does not follow symlinks or change hard-linked images, non-image files,
+permission bits, names, or SQLite ownership.
 
 ## Packaging, tests and releases
 

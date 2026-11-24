@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from .bulk import BulkCards
 from .diagnostics import Diagnostics
-from .forge import ForgeEditions, plan_archive, plan_images
+from .forge import ForgeEditions, plan_images
 from .maintenance import Rename, maintain
 from .protocol import DEFAULT_LANGUAGES, TERMINAL
 from .set_catalog import SetCatalog
@@ -441,8 +441,7 @@ class Jobs:
             raise JobConflict("A new tidy preview is required for this job")
         warning = None
         printings = None
-        originals = ()
-        collisions = 0
+        plan_issues = []
         if job["apply"]:
             with self.ready:
                 rows = self.db.execute("""SELECT stem, source, target, sha256 FROM tidy_renames
@@ -460,37 +459,33 @@ class Jobs:
                 raise UpstreamError(detail)
             check_interrupted(self.interrupt)
             edition, warning = self.forge.find(code, cards[0])
-            if bulk is not None:
-                originals, assets, printings, collisions = plan_archive(code, cards, edition, languages, self.webp)
-            else:
-                assets, printings, collisions = plan_images(code, cards, edition, languages, self.webp)
+            assets, printings, plan_issues = plan_images(code, cards, edition, languages, self.webp,
+                                                       all_languages=bulk is not None)
         with self.ready, self.db:
             check_interrupted(self.interrupt)
             if warning:
                 progress["warnings"].append(warning)
-            if collisions:
-                progress["warnings"].append(f"{collisions} image path collision(s) mapped under extras/{code.upper()}/")
+            if plan_issues:
+                progress["warnings"].append(f"{len(plan_issues)} printing or face(s) have no distinct Forge image key")
+                progress["issues"].extend(plan_issues[:12])
             status = {"download": "downloading", "scan": "scanning", "tidy": "tidying"}[operation]
-            total = len(originals) + len(assets)
+            total = len(assets)
             progress.update(status=status, printings=printings, total_images=total)
             self._save_progress(job, code)
 
-        mirrors = {} if originals else None
-        if originals:
-            self._run_assets(job, code, progress, pool, originals, operation, expected_renames, mirrors, originals=True)
-        self._run_assets(job, code, progress, pool, assets, operation, expected_renames, mirrors)
+        self._run_assets(job, code, progress, pool, assets, operation, expected_renames)
         with self.ready, self.db:
             if sum(progress[counter] for counter in COUNTERS) != total:
                 raise DownloadInterrupted
             if progress["failed"] and not (progress["downloaded"] or progress["cached"] or progress["tidied"]):
                 progress["status"] = "failed"
-            elif any(progress[key] for key in ("failed", "unavailable", "below_quality", "missing", "corrupt")):
+            elif plan_issues or any(progress[key] for key in ("failed", "unavailable", "below_quality", "missing", "corrupt")):
                 progress["status"] = "partial"
             else:
                 progress["status"] = "completed"
             self._save_progress(job, code)
 
-    def _run_assets(self, job, code, progress, pool, assets, operation, expected_renames, mirrors, *, originals=False):
+    def _run_assets(self, job, code, progress, pool, assets, operation, expected_renames):
         # Keep only workers' worth of requests in flight so a pause can drain promptly.
         remaining = iter(assets)
         tasks = {}
@@ -506,18 +501,16 @@ class Jobs:
                     previous = SavedImage(*row) if row else None
                     args = (self.root, asset, previous, self.interrupt, job["min_quality"], self.webp)
                     if operation == "download":
-                        task = pool.submit(download, self.web, *args, job["refresh_language"], job["refresh_scan"],
-                                           mirrors=None if originals else mirrors)
+                        task = pool.submit(download, self.web, *args, job["refresh_language"], job["refresh_scan"])
                     else:
                         task = pool.submit(maintain, *args, tidy=operation == "tidy", apply=job["apply"],
                                            expected=expected_renames.get(asset.stem))
-                    tasks[task] = asset, previous
+                    tasks[task] = asset.stem, previous
             if not tasks:
                 break
             done, _ = wait(tasks, return_when=FIRST_COMPLETED)
             for task in done:
-                asset, previous = tasks.pop(task)
-                stem = asset.stem
+                stem, previous = tasks.pop(task)
                 error = issue = rename = None
                 legacy = False
                 try:
@@ -525,12 +518,6 @@ class Jobs:
                     if operation == "download":
                         outcome, saved, below_quality = result
                         legacy = saved is not None and saved.file_name is not None
-                        if originals and saved is not None and saved.url:
-                            match = next((source for source in asset.sources if (
-                                source.url, source.suffix, source.source_id, source.image_updated_at
-                            ) == (saved.url, saved.suffix, saved.source_id, saved.image_updated_at)), None)
-                            if match is not None:
-                                mirrors[match] = (stem, saved)
                     else:
                         outcome, saved = result.outcome, result.saved
                         below_quality, legacy, issue = result.below_quality, result.legacy, result.issue

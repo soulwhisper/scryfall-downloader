@@ -69,7 +69,7 @@ After a restart, interrupted running jobs requeue and paused jobs stay paused.
 On resumption, counts for the active set rebuild as valid files are reused;
 finished sets are not rerun.
 
-## Full catalogue archive
+## Full catalogue sync
 
 `POST /api/v1/archive/run` accepts `{}` and an optional `Idempotency-Key`.
 It returns `202` and a usual job receipt (`archive: true`) with a
@@ -80,8 +80,8 @@ The set list is empty while the Scryfall bulk index is being prepared.
 An import failure is reported in `error` on the job receipt; retrying
 before any sets were resolved reruns the import. After resolution the
 usual set-level progress and pause/resume controls apply. Image counters
-cover both the originals and the Forge copies. See
-[archive scope and image priority](library.md#full-catalogue-archive).
+cover only Forge `cards` and `tokens` images. Unmapped or conflicting keys
+are reported in set `issues`. See [scope and image priority](library.md#full-catalogue-sync).
 
 ## Job controls
 

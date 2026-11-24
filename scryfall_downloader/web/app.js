@@ -6,7 +6,7 @@ const terminal = new Set(["completed", "partial", "failed"]);
 const operations = {download: "Download", scan: "Library scan", tidy: "Tidy preview"};
 const sources = {api: "On demand", sync_manual: "Saved list", sync_schedule: "Scheduled sync", retry: "Retry",
   tidy_apply: "Approved tidy", archive: "On demand", archive_bootstrap: "First start"};
-const nameOf = (job) => job.archive ? "Full archive" : job.apply ? "Apply renames" : operations[job.operation] || job.operation;
+const nameOf = (job) => job.archive ? "Full catalogue sync" : job.apply ? "Apply renames" : operations[job.operation] || job.operation;
 const jobUrl = (id) => `/jobs/${encodeURIComponent(id)}`;
 const jobHash = (id) => `#jobs/${encodeURIComponent(id)}`;
 

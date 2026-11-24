@@ -88,6 +88,7 @@ class BulkCardsTest(unittest.TestCase):
                   "thumb": "https://cards.scryfall.io/thumb/front.webp",
                   "art_crop": "https://cards.scryfall.io/art_crop/front.jpg"}
         normal = card(8, flavor_name="Dawn Cat", variation=True, promo=True, full_art=False,
+                      artist="M. Artist", border_color="borderless", frame_effects=["extendedart"],
                       oversized=True, textless=True, digital=False, promo_types=["starterdeck"],
                       finishes=["foil", "nonfoil"], image_status="highres_scan",
                       image_updated_at="2026-07-02T00:00:00Z", image_uris=images,

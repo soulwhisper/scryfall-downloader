@@ -1,7 +1,7 @@
 import unittest
 from uuid import UUID
 
-from scryfall_downloader.forge import Edition, plan_archive, plan_images
+from scryfall_downloader.forge import Edition, plan_images
 
 
 CDN = "https://cards.scryfall.io"
@@ -37,19 +37,16 @@ Code=WAR
         ja_alt = printing(4, "97★", name, "ja", promo_types=["jpwalker"])
         ja_other = printing(5, "97★", name, "ja", promo_types=["jpwalker"], finishes=["foil"])
         cards = [ja_other, en, ja, zhs, ja_alt, ja_alt]
-        originals, forge, count, collisions = plan_archive("war", cards, edition, ["zhs", "en"])
-        self.assertEqual((len(originals), count, collisions), (5, 5, 0))
-        self.assertEqual({asset.stem for asset in originals}, {
-            f"pics/printings/WAR/{card['lang']}/{card['collector_number']}_{card['id']}" for card in cards
-        })
+        forge, count, issues = plan_images("war", cards, edition, ["zhs", "en"], all_languages=True)
+        self.assertEqual((len(forge), count, issues), (2, 2, []))
         assets = {asset.stem: asset for asset in forge}
         regular = assets[f"pics/cards/WAR/{name}1.full"]
         alternate = assets[f"pics/cards/WAR/{name}2.full"]
         self.assertEqual(source_ids(regular), [zhs["id"], en["id"], ja["id"]])
         self.assertEqual(source_ids(alternate), [ja_alt["id"], ja_other["id"]])
         self.assertTrue(regular.legacy_border and alternate.legacy_border)
-        self.assertEqual(plan_archive("war", list(reversed(cards)), edition, ["zhs", "en"]),
-                         (originals, forge, count, collisions))
+        self.assertEqual(plan_images("war", list(reversed(cards)), edition, ["zhs", "en"], all_languages=True),
+                         (forge, count, issues))
         manual, slots, _ = plan_images("war", cards, edition, ["zhs", "en"])
         self.assertEqual(slots, 2)
         self.assertEqual({asset.stem: source_ids(asset) for asset in manual}, {
@@ -63,10 +60,8 @@ Code=WAR
         zhs = printing(2, "333", name, "zhs", set_code="khm")
         ph = printing(3, "333", name, "ph", set_code="khm", promo_types=["boosterfun"])
         cards = [en, zhs, ph]
-        originals, forge, _, _ = plan_archive("khm", cards, edition, ["zhs", "en"], webp=True)
+        forge, _, _ = plan_images("khm", cards, edition, ["zhs", "en"], webp=True, all_languages=True)
         self.assertEqual(source_ids(forge[0]), [ph["id"], ph["id"], zhs["id"], zhs["id"], en["id"], en["id"]])
-        by_url = {source.url: source for asset in originals for source in asset.sources}
-        self.assertEqual(forge[0].sources, tuple(by_url[source.url] for source in forge[0].sources))
         self.assertEqual(forge[0].languages, ("ph", "zhs", "en"))
         manual, _, _ = plan_images("khm", cards, edition, ["zhs", "en"])
         self.assertEqual(source_ids(manual[0]), [zhs["id"], en["id"]])
@@ -79,12 +74,12 @@ Code=WAR
         translated = printing(5, "97", walker, "ja")
         promo = printing(6, "97", walker, "ja", promo_types=["jpwalker"])
         variants = [regular, translated, promo]
-        _, forge, _, _ = plan_archive("war", variants, None, ["zhs", "en"])
+        forge, _, _ = plan_images("war", variants, None, ["zhs", "en"], all_languages=True)
         self.assertEqual(source_ids(forge[0]), [promo["id"], regular["id"], translated["id"]])
         selected_special, _, _ = plan_images("war", variants, None, ["en", "ja"])
         self.assertEqual(source_ids(selected_special[0]), [promo["id"], regular["id"], translated["id"]])
 
-    def test_unknown_languages_digital_faces_and_missing_images_are_archived(self):
+    def test_digital_faces_and_unavailable_images_use_only_forge_keys(self):
         name = "Front // Back"
         faces = [
             {"name": "Front", "image_uris": {"large": f"{CDN}/front.jpg"}},
@@ -94,29 +89,105 @@ Code=WAR
                         digital=True, set_type="alchemy")
         missing = printing(2, "8", "Missing", "fr", image_status="missing")
         placeholder = printing(3, "9", "Placeholder", "it", image_status="placeholder")
-        originals, forge, count, collisions = plan_archive("war", [card, missing, placeholder], None, ["en"])
-        self.assertEqual((count, collisions), (3, 0))
-        by_stem = {asset.stem: asset for asset in originals}
-        base = f"pics/printings/WAR/%2E%2E%2Fx/72_{card['id']}"
-        front = by_stem[base + "_1"]
-        back = by_stem[base + "_2"]
-        self.assertEqual(front.sources[0].url, f"{CDN}/front.jpg")
-        self.assertEqual(back.sources[0].url, f"{CDN}/back.jpg")
+        forge, count, issues = plan_images("war", [card, missing, placeholder], None, ["en"], all_languages=True)
+        self.assertEqual((count, issues), (3, []))
         canonical = {asset.stem: asset.sources for asset in forge}
-        self.assertEqual(canonical["pics/cards/WAR/Front.full"], front.sources)
-        self.assertEqual(canonical["pics/cards/WAR/Back.full"], back.sources)
+        self.assertEqual(set(canonical), {f"pics/cards/WAR/{name}.full"
+                                          for name in ("Front", "Back", "Missing", "Placeholder")})
+        self.assertEqual(canonical["pics/cards/WAR/Front.full"][0].url, f"{CDN}/front.jpg")
+        self.assertEqual(canonical["pics/cards/WAR/Back.full"][0].url, f"{CDN}/back.jpg")
         self.assertEqual(canonical["pics/cards/WAR/Missing.full"], ())
         self.assertEqual(canonical["pics/cards/WAR/Placeholder.full"], ())
-        self.assertEqual(by_stem[f"pics/printings/WAR/fr/8_{missing['id']}"].sources, ())
-        self.assertEqual(by_stem[f"pics/printings/WAR/it/9_{placeholder['id']}"].sources, ())
 
     def test_exact_key_collision_keeps_confirmed_art_even_against_special_inference(self):
         edition = Edition.parse("[metadata]\nCode=WAR\n[cards]\n2 C A: B\n")
         inferred = printing(1, "1", "A B", "ph")
         confirmed = printing(2, "2", "A: B", "en")
-        originals, forge, count, collisions = plan_archive("war", [inferred, confirmed], edition, ["en"])
-        self.assertEqual((len(originals), count, collisions), (2, 2, 1))
+        forge, count, issues = plan_images("war", [inferred, confirmed], edition, ["en"], all_languages=True)
+        self.assertEqual(count, 2)
+        self.assertEqual({asset.stem: source_ids(asset) for asset in forge},
+                         {"pics/cards/WAR/A B.full": [confirmed["id"]]})
+        self.assertEqual(len(issues), 1)
+        self.assertIn("pics/cards/WAR/A B.full", issues[0])
+
+    def test_wide_art_treatments_keep_their_forge_slots_even_with_incomplete_metadata(self):
+        # Same artist across ordinary and wide framing is not sufficient to
+        # collapse two distinct collector numbers.
+        edition = Edition.parse("""[metadata]
+Code=X
+Code2=XX
+[cards]
+1 R Oak @A
+9 L Island @B
+[borderless]
+99 R Oak @A
+[extended art]
+109 R Oak @C
+[full art]
+10 L Island @B
+""")
+        regular = printing(1, "1", "Oak", "zhs", artist="A")
+        wide = printing(2, "99", "Oak", "en", artist="A", border_color="borderless")
+        extended = printing(3, "109", "Oak", "ja", artist="C", frame_effects=["extendedart"])
+        full_art = printing(4, "10", "Island", "en", artist="B", full_art=True)
+        ordinary_land = printing(5, "9", "Island", "zhs", artist="B")
+        unregistered = printing(6, "2", "Oak", "ph", artist="A", variation=True)
+        forge, _, issues = plan_images("x", [unregistered, full_art, wide, extended, regular, ordinary_land],
+                                       edition, ["zhs", "en"], all_languages=True)
         self.assertEqual({asset.stem: source_ids(asset) for asset in forge}, {
-            "pics/cards/WAR/A B.full": [confirmed["id"]],
-            f"extras/WAR/{inferred['id']}_1": [inferred["id"]],
+            "pics/cards/XX/Oak1.full": [regular["id"]],
+            "pics/cards/XX/Oak2.full": [wide["id"]],
+            "pics/cards/XX/Oak3.full": [extended["id"]],
+            "pics/cards/XX/Island1.full": [ordinary_land["id"]],
+            "pics/cards/XX/Island2.full": [full_art["id"]],
+        })
+        self.assertEqual(issues, ["2 Oak: no unique art slot in the Forge edition"])
+        # The missing lower collector in a later sync must not renumber Oak2.
+        found, _, _ = plan_images("x", [wide], edition, ["en"])
+        self.assertEqual(found[0].stem, "pics/cards/XX/Oak2.full")
+
+    def test_one_key_prefers_art_treatment_before_language(self):
+        name = "Island"
+        edition = Edition.parse("[metadata]\nCode=ZEN\n[cards]\n234 L Island\n")
+        regular = printing(1, "234", name, "zhs")
+        translated = printing(2, "234", name, "ja")
+        full_art = printing(3, "234", name, "en", full_art=True)
+        assets, _, issues = plan_images("zen", [regular, translated, full_art], edition, ["zhs", "en"],
+                                        all_languages=True)
+        self.assertEqual(issues, [])
+        self.assertEqual({asset.stem: source_ids(asset) for asset in assets}, {
+            "pics/cards/ZEN/Island.full": [full_art["id"], regular["id"], translated["id"]],
+        })
+
+    def test_forge_artist_disambiguates_reused_collector_numbers(self):
+        edition = Edition.parse("[metadata]\nCode=X\n[cards]\n1 R Oak @Second\n1 C Oak @First\n")
+        first = printing(1, "1", "Oak", "zhs", artist="First")
+        second = printing(2, "1", "Oak", "en", artist="Second")
+        assets, _, issues = plan_images("x", [second, first], edition, ["zhs", "en"])
+        self.assertEqual(issues, [])
+        self.assertEqual({asset.stem: source_ids(asset) for asset in assets}, {
+            "pics/cards/X/Oak1.full": [first["id"]],
+            "pics/cards/X/Oak2.full": [second["id"]],
+        })
+
+    def test_numbered_token_art_and_aliases_use_forge_edition_folder(self):
+        edition = Edition.parse("""[metadata]
+Code=ONE
+Code2=XX
+[tokens]
+3 r_1_1_phyrexian_goblin
+3 r_1_1_phyrexian_goblin_haste
+11 c_1_1_a_phyrexian_mite_toxic_noblock
+12 c_1_1_a_phyrexian_mite_toxic_noblock
+""")
+        cards = [printing(n, str(n), name, "en", set_code="tone", layout="token", set_type="token")
+                 for n, name in ((3, "Phyrexian Goblin"), (11, "Phyrexian Mite"), (12, "Phyrexian Mite"))]
+        assets, _, issues = plan_images("tone", cards, edition, ["en"])
+        self.assertEqual(issues, [])
+        self.assertEqual({asset.stem: source_ids(asset) for asset in assets}, {
+            f"pics/tokens/ONE/3_{slug}": [cards[0]["id"]]
+            for slug in ("r_1_1_phyrexian_goblin", "r_1_1_phyrexian_goblin_haste")
+        } | {
+            f"pics/tokens/ONE/{n}_c_1_1_a_phyrexian_mite_toxic_noblock": [cards[i]["id"]]
+            for i, n in enumerate((11, 12), 1)
         })

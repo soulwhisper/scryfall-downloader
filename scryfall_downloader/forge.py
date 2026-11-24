@@ -19,7 +19,8 @@ SHORT_CODE = re.compile(r"[A-Za-z0-9_-]{1,16}\Z")
 CARD_SECTIONS = frozenset("""cards|special slot|precon product|borderless|etched|showcase|full art|extended art|
 alternate art|retro frame|buy a box|promo|prerelease promo|bundle|box topper|jumpstart|rebalanced|
 eternal|conjured|scheme|printsheets""".replace("\n", "").split("|"))
-CARD_ROW = re.compile(r"(?:(\S*\d\S*)\s+)?(?:[SCURML]\s+)?([^@$]+?)(?: @[^$]*)?(?: \$\{(.+)\})?$")
+CARD_ROW = re.compile(r"(?:(\S*\d\S*)\s+)?(?:([SCURML])\s+)?([^@$]+?)(?: @([^$]*?))?(?: \$\{(.+)\})?$")
+RARITY_ORDER = "LCURMS?"
 TOKEN_ROW = re.compile(r"(\S*\d\S*)\s+([^@]+?)(?: @.*)?$")
 VARIANT_PARAMS = re.compile(r'"(flavorname|variant)"\s*:\s*"([^"]+)"', re.I)
 FORMATS = (("png", "png", ".png"), ("display", "large", ".webp"), ("large", "large", ".jpg"),
@@ -47,6 +48,7 @@ def collector_key(number: str) -> tuple[str, str]:
 @dataclass(frozen=True, slots=True)
 class EditionCard:
     name: str
+    artist: str
     variant: str
     flavor_name: str
     art_suffix: str
@@ -78,9 +80,10 @@ class Edition:
                 if sep:
                     metadata[key.strip().casefold()] = value.strip()
             elif section in CARD_SECTIONS and (match := CARD_ROW.fullmatch(line)):
-                number, name, params = match.groups()
+                number, rarity, name, artist, params = match.groups()
                 extra = {key.lower(): value for key, value in VARIANT_PARAMS.findall(params or "")}
-                rows[name.strip()].append((number or "50000", extra.get("variant", ""), extra.get("flavorname", "")))
+                rows[name.strip()].append((number or "50000", rarity or "?", (artist or "").strip(),
+                                           extra.get("variant", ""), extra.get("flavorname", "")))
             elif section == "tokens" and (match := TOKEN_ROW.fullmatch(line)):
                 tokens[match[1]].append(match[2].strip())
 
@@ -91,13 +94,12 @@ class Edition:
         scryfall = metadata.get("scryfallcode", code).lower()
         cards = defaultdict(list)
         for name, prints in rows.items():
-            counts = Counter(variant for _, variant, _ in prints)
-            for index, (number, variant, flavor_name) in enumerate(
-                sorted(prints, key=lambda row: collector_key(row[0]))
-            ):
+            counts = Counter(row[3] for row in prints)
+            ordered = sorted(prints, key=lambda row: (collector_key(row[0])[0], RARITY_ORDER.index(row[1])))
+            for index, (number, _rarity, artist, variant, flavor_name) in enumerate(ordered):
                 count = counts[variant] if variant else len(prints)
                 suffix = str(index % count + 1) if count > 1 else ""
-                cards[number].append(EditionCard(name, variant, flavor_name, suffix))
+                cards[number].append(EditionCard(name, artist, variant, flavor_name, suffix))
         return cls(code, folder, scryfall, metadata.get("tokenscode", "t" + scryfall).lower(), cards, tokens)
 
 
@@ -205,12 +207,6 @@ def _unique_sources(groups) -> tuple[Source, ...]:
     return tuple(by_url.values())
 
 
-def image_sources(prints: dict[str, dict], side: int, languages: list[str],
-                  webp: bool = False) -> tuple[Source, ...]:
-    return _unique_sources(_printing_sources(card, _image_slot(card, side), webp)
-                           for lang in languages if (card := prints.get(lang)))
-
-
 def _ordered_slots(prints):
     return sorted(prints, key=lambda key: (collector_key(key[0]), key[1]))
 
@@ -223,28 +219,30 @@ def _art_indexes(representatives):
             for name, numbers in arts.items() for i, number in enumerate(numbers, 1)}
 
 
-def _edition_entry(edition, number, full_name, first_name, flavor, *, archive):
+def _edition_entry(edition, card, first_name):
     if not edition:
         return None
-    rows = edition.cards.get(number, ())
-    if archive and flavor:
-        # A flavor-name row is stronger evidence than the shared Oracle name.
-        for row in rows:
-            if row.flavor_name == flavor:
-                return row
-    for row in rows:
-        if row.name in (full_name, first_name) or (row.flavor_name and row.flavor_name == flavor):
-            return row
-    return None
+    number = card["collector_number"]
+    names = (card["name"], first_name)
+    flavor = card.get("flavor_name")
+    rows = [row for row in edition.cards.get(number, ())
+            if row.name in names or (flavor and row.flavor_name == flavor)]
+    if not rows and re.fullmatch(r"\d+[a-z]?", number):
+        # Forge prefixes some Un-set collectors with F, while Scryfall omits it.
+        rows = [row for row in edition.cards.get("F" + number, ()) if row.name in names]
+    if flavor:
+        rows = [row for row in rows if row.flavor_name == flavor] or rows
+    if len(rows) > 1 and (artist := card.get("artist")):
+        rows = [row for row in rows if filename(row.artist).casefold() == filename(artist).casefold()]
+    return rows[0] if len(rows) == 1 else None
 
 
-def _forge_keys(code, card, edition, indexes, *, archive=False):
+def _forge_keys(code, card, edition, entry, indexes):
     number = card["collector_number"]
     names = face_names(card)
     layout = card["layout"]
     token_set = card["set_type"] == "token"
     faces = card.get("card_faces") or []
-    entry = _edition_entry(edition, number, card["name"], names[0], card.get("flavor_name"), archive=archive)
     art = entry.art_suffix if entry else indexes.get((names[0], number), "")
     folder = edition.folder if edition else code.upper()
     for side, name in enumerate(names):
@@ -253,10 +251,11 @@ def _forge_keys(code, card, edition, indexes, *, archive=False):
             token_number = number if side == 0 else number + "☇"
             slugs = edition.tokens.get(token_number) if edition else None
             if slugs:
-                stem = f"pics/tokens/{edition.code}/{filename(token_number)}_{filename(slugs[0])}"
+                for slug in dict.fromkeys(slugs):
+                    yield side, f"pics/tokens/{edition.code}/{filename(token_number)}_{filename(slug)}", True, False
             else:
                 stem = f"pics/tokens/{code.upper()}/{filename(token_number)}_{filename(name).replace(' ', '_')}"
-            yield side, name, stem, bool(slugs), False
+                yield side, stem, False, False
         else:
             if side == 0 and layout != "split":
                 if entry:
@@ -267,128 +266,82 @@ def _forge_keys(code, card, edition, indexes, *, archive=False):
                     name = names[0]
             infix = "" if face_layout == "planar" else ".full"
             stem = f"pics/cards/{folder}/{filename(name)}{art}{infix}"
-            yield side, name, stem, entry is not None, entry is not None and bool(infix)
+            yield side, stem, entry is not None, entry is not None and bool(infix)
 
 
-def _special_priority(card):
+def _treatment_priority(card):
     lang = card["lang"]
     if lang == "ph":
         return 0
     if lang == "ja" and "jpwalker" in (card.get("promo_types") or ()):
         return 1
-    return 2
+    if (card.get("full_art") or card.get("variation") or card.get("border_color") == "borderless"
+            or any(effect in ("showcase", "extendedart") for effect in (card.get("frame_effects") or ()))):
+        return 2
+    return 3
 
 
 def _candidate_rank(card, language_rank):
     lang = card["lang"]
-    return _special_priority(card), language_rank.get(lang, len(language_rank)), lang, card.get("id") or ""
+    return _treatment_priority(card), language_rank.get(lang, len(language_rank)), lang, card.get("id") or ""
 
 
-def plan_images(code: str, cards: list[dict], edition: Edition | None,
-                languages: list[str], webp: bool = False) -> tuple[list[Asset], int, int]:
+def plan_images(
+    code: str, cards: list[dict], edition: Edition | None, languages: list[str], webp: bool = False, *,
+    all_languages: bool = False,
+) -> tuple[list[Asset], int, list[str]]:
+    """Build one ordered source list per Forge image key, with no off-tree copies."""
     prints = defaultdict(list)
     for card in cards:
         prints[card["collector_number"], card["name"]].append(card)
     ordered = _ordered_slots(prints)
+    language_rank = {lang: i for i, lang in enumerate(dict.fromkeys(languages))}
     representatives = {}
     for slot in ordered:
         variants = prints[slot]
-        by_lang = {card["lang"]: card for card in variants}
-        representatives[slot] = by_lang.get("en", next(iter(by_lang.values())))
+        variants.sort(key=lambda card: _candidate_rank(card, language_rank))
+        representatives[slot] = next((card for card in variants if card["lang"] == "en"), variants[0])
     indexes = _art_indexes(representatives)
-    language_rank = {lang: i for i, lang in enumerate(dict.fromkeys(languages))}
+    known_names = {row.name for rows in edition.cards.values() for row in rows} if edition else set()
     desired = []
-    for slot, card in representatives.items():
-        variants = sorted((candidate for candidate in prints[slot] if candidate["lang"] in language_rank),
-                          key=lambda candidate: _candidate_rank(candidate, language_rank))
-        promoted = (candidate["lang"] for candidate in variants if _special_priority(candidate) < 2)
-        preferred = tuple(dict.fromkeys((*promoted, *language_rank)))
-        for side, name, stem, found, legacy in _forge_keys(code, card, edition, indexes):
-            sources = _unique_sources(_printing_sources(candidate, _image_slot(candidate, side), webp)
-                                      for candidate in variants)
-            desired.append((not found, slot[0], name, side, Asset(stem, sources, legacy, preferred)))
+    issues = []
+    for slot in ordered:
+        number, name = slot
+        representative = representatives[slot]
+        candidates = defaultdict(list)
+        for card in prints[slot]:
+            first_name = face_names(card)[0]
+            entry = _edition_entry(edition, card, first_name)
+            token = card["set_type"] == "token" or card["layout"] in TOKEN_LAYOUTS
+            if entry is None and not token and (name in known_names or first_name in known_names):
+                # The edition defines the card's art count. Guessing a suffix for
+                # another collector number can assign it to a different Forge art.
+                continue
+            for side, stem, found, legacy in _forge_keys(code, card if entry else representative,
+                                                         edition, entry, indexes):
+                key = side, stem, found, legacy
+                sources = candidates[key]
+                lang = card["lang"]
+                if all_languages or lang in language_rank:
+                    sources.append((card, _printing_sources(card, _image_slot(card, side), webp)))
+        if not candidates:
+            issues.append(f"{number} {name}: no unique art slot in the Forge edition")
+        for (_side, stem, found, legacy), variants in candidates.items():
+            sources = _unique_sources(group for _, group in variants)
+            preferred = tuple(dict.fromkeys(
+                [card["lang"] for card, _ in variants if _treatment_priority(card) < 3]
+                + list(language_rank) + [card["lang"] for card, _ in variants]
+            ))
+            desired.append((not found, not sources, number, name, Asset(stem, sources, legacy, preferred)))
 
     assets = []
-    occupied = set()
-    collisions = 0
-    # Keep confirmed Forge names when an unrecognized printing proposes the same path.
-    for _inferred, number, name, side, asset in sorted(desired, key=lambda item: item[0]):
+    occupied = {}
+    # Confirmed slots reserve their keys even if no eligible scan is available.
+    for _inferred, _empty, number, name, asset in sorted(desired, key=lambda item: item[:2]):
         key = asset.stem.casefold()
         if key in occupied:
-            collisions += 1
-            stem = f"extras/{code.upper()}/{filename(number)}_{filename(name)}_{side + 1}_{collisions}"
-            asset = Asset(stem, asset.sources, languages=asset.languages)
-        occupied.add(asset.stem.casefold())
+            issues.append(f"{number} {name}: {asset.stem} already belongs to {occupied[key]}")
+            continue
+        occupied[key] = f"{number} {name}"
         assets.append(asset)
-    return assets, len(prints), collisions
-
-
-def _path_segment(value: str) -> str:
-    # Percent-encode unknown codes without turning them into path separators,
-    # traversal components, or ambiguous aliases of a known language.
-    return quote(value, safe="").replace(".", "%2E") or "%empty"
-
-
-def _archive_id(value: str) -> str:
-    try:
-        return str(UUID(value))
-    except ValueError:
-        return hashlib.sha256(value.encode()).hexdigest()
-
-
-def plan_archive(code: str, cards: list[dict], edition: Edition | None,
-                 languages: list[str], webp: bool = False) -> tuple[list[Asset], list[Asset], int, int]:
-    """Return (UUID/face originals, Forge projection, distinct UUID count, Forge collisions)."""
-    unique = {}
-    for card in cards:
-        unique.setdefault(_archive_id(card["id"]), card)
-    prints = defaultdict(list)
-    for ident, card in unique.items():
-        prints[card["collector_number"], card["name"]].append((ident, card))
-    language_rank = {lang: i for i, lang in enumerate(dict.fromkeys(languages))}
-    code = _path_segment(code.upper())
-    ordered = _ordered_slots(prints)
-    representatives = {}
-    for slot in ordered:
-        prints[slot].sort(key=lambda item: _candidate_rank(item[1], language_rank))
-        representatives[slot] = next((card for _, card in prints[slot] if card["lang"] == "en"), prints[slot][0][1])
-    indexes = _art_indexes(representatives)
-    originals = []
-    forge_slots = defaultdict(list)
-    for number, name in ordered:
-        for ident, card in prints[number, name]:
-            lang = card["lang"]
-            stem = f"pics/printings/{code}/{_path_segment(lang)}/{filename(number)}_{ident}"
-            faces = card.get("card_faces") or []
-            keys = tuple(_forge_keys(code, card, edition, indexes, archive=True))
-            face_slots = [i for i, face in enumerate(faces) if card["layout"] in TWO_SIDES or face.get("image_uris")]
-            slots = {slot: _printing_sources(card, slot, webp) for slot in face_slots}
-            if not slots or card.get("image_uris") or any(_image_slot(card, side) is None for side, *_ in keys):
-                slots[None] = _printing_sources(card, None, webp)
-            for slot, sources in slots.items():
-                suffix = "" if slot is None else f"_{slot + 1}"
-                originals.append(Asset(stem + suffix, sources, languages=(lang,)))
-            rank = _candidate_rank(card, language_rank)
-            for side, _, key, found, legacy in keys:
-                image_slot = _image_slot(card, side)
-                forge_slots[number, name, side, key, found, legacy].append((rank, lang, ident, slots[image_slot]))
-
-    desired = []
-    for (number, name, side, stem, found, legacy), candidates in forge_slots.items():
-        rank, _, ident, _ = next((candidate for candidate in candidates if candidate[3]), candidates[0])
-        preferred = tuple(dict.fromkeys(lang for _, lang, _, _ in candidates))
-        sources = _unique_sources(sources for _, _, _, sources in candidates)
-        desired.append((not found, not sources, rank[:2], collector_key(number), name, side, ident,
-                        Asset(stem, sources, legacy, preferred)))
-
-    forge_assets = []
-    occupied = set()
-    collisions = 0
-    for *_, side, ident, asset in sorted(desired, key=lambda item: item[:-1]):
-        key = asset.stem.casefold()
-        if key in occupied:
-            collisions += 1
-            asset = Asset(f"extras/{code}/{ident}_{side + 1}", asset.sources, languages=asset.languages)
-        occupied.add(asset.stem.casefold())
-        forge_assets.append(asset)
-    return originals, forge_assets, len(unique), collisions
+    return assets, len(prints), issues

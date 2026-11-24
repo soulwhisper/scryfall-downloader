@@ -301,7 +301,7 @@ class DownloaderTest(unittest.TestCase):
             self.assertEqual((job["sets"]["tst"]["downloaded"], job["sets"]["tst"]["cached"]), (2, 1))
             self.assertEqual(upstream.image_requests, ["1.png", "2.png", "2.png", "3.png"])
 
-    def test_archive_bootstrap_resume_and_reuses_printings_for_forge(self):
+    def test_archive_bootstrap_resumes_with_only_forge_images(self):
         entered, release = threading.Event(), threading.Event()
         ph = pixel_png(60)
         common = pixel_png(10)
@@ -324,9 +324,12 @@ class DownloaderTest(unittest.TestCase):
         ):
             cards.append(dict(printing(1, lang, name, scan), object="card", id=str(UUID(int=k)), set=code,
                               set_type=kind, released_at=released, set_name=code))
-        upstream = CatalogueUpstream(cards, {"token.png": common, "en.png": common, "zh.png": common,
-                                             "ph.png": ph, "digital.png": common, "draft.png": last_printing})
-        rows = "1 C Oak\n"
+        cards.append(dict(cards[0], id=str(UUID(int=7)), collector_number="2", full_art=True,
+                          border_color="borderless", image_uris={"png": IMAGE_ORIGIN + "borderless.png"}))
+        wide_art = pixel_png(44)
+        upstream = CatalogueUpstream(cards, {"token.png": common, "ph.png": ph, "borderless.png": wide_art,
+                                             "digital.png": common, "draft.png": last_printing})
+        rows = "1 C Oak\n[borderless]\n2 C Oak\n"
         with self.server(upstream, rows, archive_all=True) as port:
             try:
                 self.assertTrue(entered.wait(5))
@@ -345,29 +348,51 @@ class DownloaderTest(unittest.TestCase):
             self.assertEqual(self.api(port, "GET", path), paused)
             self.api(port, "POST", path + "/resume", expect=202)
             completed = self.wait_for(port, path, "completed")
-            self.assertEqual(completed["sets"]["tst"]["total_images"], 4)
+            self.assertEqual(completed["sets"]["tst"]["total_images"], 2)
             pics = self.root / "pics"
-            self.assertEqual((pics / "cards/FT/Oak.full.png").read_bytes(), ph)
+            primary = pics / "cards/FT/Oak1.full.png"
+            alternate = pics / "cards/FT/Oak2.full.png"
+            self.assertEqual(primary.read_bytes(), ph)
+            self.assertEqual(alternate.read_bytes(), wide_art)
             self.assertEqual((pics / "tokens/TOK/1_Mite.png").read_bytes(), common)
-            for card in cards:
-                original = pics / "printings" / card["set"].upper() / card["lang"] / f"1_{card['id']}.png"
-                self.assertEqual(original.read_bytes(), ph if card["lang"] == "ph" else common)
+            self.assertEqual({file.relative_to(pics).as_posix() for file in pics.rglob("*.png")}, {
+                "cards/FT/Oak1.full.png", "cards/FT/Oak2.full.png", "tokens/TOK/1_Mite.png",
+                "cards/YDG/Owl.full.png", "cards/DRF/Pine.full.png",
+            })
+            self.assertEqual({child.name for child in pics.iterdir()}, {"cards", "tokens"})
+            self.assertFalse((self.root / "extras").exists())
             self.assertEqual(upstream.bulk_requests, ["api.scryfall.com", "data.scryfall.io"])
-            self.assertEqual(upstream.image_requests, ["token.png", "ph.png", "zh.png", "en.png",
+            self.assertEqual(upstream.image_requests, ["token.png", "ph.png", "borderless.png",
                                                         "digital.png", "draft.png", "draft.png"])
 
-            damaged = pics / f"printings/TST/en/1_{cards[0]['id']}.png"
-            damaged.write_bytes(ph)
+            primary.write_bytes(common)  # Valid PNG, but wrong checksum for this slot.
             headers = {"Idempotency-Key": "rescan"}
             refresh = self.api(port, "POST", "/archive/run", {}, expect=202, headers=headers)
             repaired = self.wait_for(port, f"/jobs/{refresh['id']}", "completed")
-            self.assertEqual(damaged.read_bytes(), common)
-            self.assertEqual(upstream.image_requests[-1], "en.png")
-            self.assertEqual(len(upstream.image_requests), 8)
+            self.assertEqual(primary.read_bytes(), ph)
+            self.assertEqual(alternate.read_bytes(), wide_art)
+            self.assertEqual(upstream.image_requests[6:], ["ph.png"])
             self.assertEqual(self.api(port, "POST", "/archive/run", {}, expect=202, headers=headers), repaired)
 
         with self.server(upstream, rows, archive_all=True) as port:
             self.assertEqual(len(self.api(port, "GET", "/jobs?summary=1")["jobs"]), 2)
+
+    def test_unmapped_variant_is_reported_without_writing_another_image(self):
+        cards = [dict(printing(1, "en", "A: B", "correct.png"), object="card", id=str(UUID(int=1))),
+                 dict(printing(2, "ph", "A B", "collision.png"), object="card", id=str(UUID(int=2))),
+                 dict(printing(3, "en", "A: B", "unmapped.png"), object="card", id=str(UUID(int=3)))]
+        artwork = pixel_png(13)
+        upstream = CatalogueUpstream(cards, {"correct.png": artwork})
+        with self.server(upstream, "1 C A: B\n") as port:
+            job = self.api(port, "POST", "/archive/run", {}, expect=202)
+            receipt = self.wait_for(port, f"/jobs/{job['id']}", "partial")["sets"]["tst"]
+            self.assertEqual(receipt["downloaded"], 1)
+            self.assertTrue(any("no unique art slot" in issue for issue in receipt["issues"]))
+            self.assertTrue(any("already belongs to" in issue for issue in receipt["issues"]))
+            self.assertEqual(upstream.image_requests, ["correct.png"])
+            pics = self.root / "pics"
+            self.assertEqual({file.relative_to(pics).as_posix(): file.read_bytes() for file in pics.rglob("*.png")},
+                             {"cards/FT/A B.full.png": artwork})
 
     def test_failed_archive_import_has_a_retryable_receipt(self):
         card = dict(printing(1, "en", "Oak", "en.png"), object="card", id=str(UUID(int=1)))

@@ -310,21 +310,14 @@ def save_image(reply, file, suffix: str, stop) -> tuple[int, str, ImageSize]:
     if length is not None and length > MAX_IMAGE_BYTES:
         raise UpstreamError("Image exceeds the 16 MiB limit")
 
-    def read(size):
-        try:
-            return reply.read(size)
-        except (OSError, http.client.HTTPException) as exc:
-            raise _ImageTransportError(str(exc)) from exc
-
-    return _write_image(read, file, suffix, stop, length)
-
-
-def _write_image(read, file, suffix, stop, length, *, verified=False):
     digest = hashlib.sha256()
     size = 0
     while True:
         check_interrupted(stop)
-        block = read(128 * 1024)
+        try:
+            block = reply.read(128 * 1024)
+        except (OSError, http.client.HTTPException) as exc:
+            raise _ImageTransportError(str(exc)) from exc
         if not block:
             break
         size += len(block)
@@ -334,7 +327,7 @@ def _write_image(read, file, suffix, stop, length, *, verified=False):
         digest.update(block)
     if length is not None and size != length:
         raise InvalidImage("Incomplete image body")
-    return size, digest.hexdigest(), image_size(file, suffix, size, check_png_chunks=not verified)
+    return size, digest.hexdigest(), image_size(file, suffix, size)
 
 
 def _retry_after(value: str | None) -> float:
@@ -348,46 +341,18 @@ def _retry_after(value: str | None) -> float:
         return 0
 
 
-def _publish_image(file, source, size, digest, shape, stop, accepts, before_replace):
-    if not accepts(shape):
-        raise BelowQuality
-    check_interrupted(stop)
-    # Forge clients do not necessarily share the downloader's UID.
-    os.chmod(file.name, 0o644)
-    before_replace()
-    saved = SavedImage(source.url, source.suffix, size, digest, source.language,
-                       source_id=source.source_id, image_updated_at=source.image_updated_at)
-    return saved, shape
-
-
-def _copy_image(root: Path, path: Path, source: Source, mirror, stop, accepts, before_replace):
-    stem, saved = mirror
-    archive = _image_path(_image_stem(root, Asset(stem, ())), source.suffix)
-    try:
-        fd = os.open(archive, IMAGE_READ_FLAGS)
-    except FileNotFoundError:
-        return None
-    with os.fdopen(fd, "rb") as original:
-        info = os.fstat(original.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_size != saved.size:
-            return None
-
-        def write(file):
-            size, digest, shape = _write_image(original.read, file, source.suffix, stop, saved.size, verified=True)
-            if digest != saved.sha256 or not _same_image(info, os.fstat(original.fileno())):
-                raise InvalidImage("Archived bytes changed before the Forge copy")
-            return _publish_image(file, source, size, digest, shape, stop, accepts, before_replace)
-
-        try:
-            return atomic_write(path, write)
-        except InvalidImage:
-            return None  # The CDN can still serve the image if a local mirror changed.
-
-
 def _fetch_image(web: Web, path: Path, source: Source, stop, accepts, before_replace) -> tuple[SavedImage, ImageSize] | None:
     def write(file):
         size, digest, shape = save_image(reply, file, source.suffix, stop)
-        return _publish_image(file, source, size, digest, shape, stop, accepts, before_replace)
+        if not accepts(shape):
+            raise BelowQuality
+        check_interrupted(stop)
+        # Forge clients do not necessarily share the downloader's UID.
+        os.chmod(file.name, 0o644)
+        before_replace()
+        saved = SavedImage(source.url, source.suffix, size, digest, source.language,
+                           source_id=source.source_id, image_updated_at=source.image_updated_at)
+        return saved, shape
 
     for attempt in range(IMAGE_ATTEMPTS):
         check_interrupted(stop)
@@ -449,8 +414,7 @@ def _retire_masking(paths: tuple[Path, ...], known: dict[Path, LocalImage]):
 
 def download(
     web: Web, root: Path, asset: Asset, previous: SavedImage | None, stop, minimum: str | None,
-    webp: bool = False, refresh_language: bool = False, refresh_scan: bool = False, *,
-    mirrors: dict[Source, tuple[str, SavedImage]] | None = None,
+    webp: bool = False, refresh_language: bool = False, refresh_scan: bool = False,
 ) -> tuple[str, SavedImage | None, bool]:
     """Reuse Forge's lookup order unless an explicit policy allows a verified replacement."""
     stem = _image_stem(root, asset)
@@ -547,12 +511,7 @@ def download(
                 _unchanged(selected.path, selected.info)
 
         try:
-            mirror = mirrors.get(source) if mirrors else None
-            result = _copy_image(root, path, source, mirror, stop, accepts, before_replace) if mirror else None
-            if result is None:
-                result = _fetch_image(web, path, source, stop, accepts, before_replace)
-        except BelowQuality:
-            continue
+            result = _fetch_image(web, path, source, stop, accepts, before_replace)
         except (InvalidImage, UpstreamError) as exc:
             failure = exc
             continue

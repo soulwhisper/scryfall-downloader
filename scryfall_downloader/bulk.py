@@ -26,13 +26,13 @@ _MAX_METADATA = 256 * 1024
 _MAX_COMPRESSED = 2 * 1024**3
 _MAX_EXPANDED = 16 * 1024**3
 _MAX_LINE = 1024**2
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _LANGUAGE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
 _RELEASE_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _IMAGE_KEYS = tuple(key for key, _quality, _suffix in FORMATS)
-_TEXT_FIELDS = ("flavor_name", "image_status", "image_updated_at")
+_TEXT_FIELDS = ("flavor_name", "artist", "border_color", "image_status", "image_updated_at")
 _FLAG_FIELDS = ("variation", "promo", "full_art", "textless", "oversized", "digital")
-_LIST_FIELDS = ("promo_types", "finishes")
+_LIST_FIELDS = ("promo_types", "frame_effects", "finishes")
 
 
 def _reject_constant(value):
