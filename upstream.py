@@ -1,6 +1,7 @@
 """Scryfall transport, on-disk metadata cache, and native image downloads."""
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 import hashlib
 import http.client
@@ -24,6 +25,9 @@ MAX_IMAGE_BYTES = 16 * 1024 * 1024
 IMAGE_ATTEMPTS = 4
 MAX_RETRY_DELAY = 60
 NETWORK_ERRORS = (OSError, http.client.HTTPException, ValueError)
+IMAGE_ACCEPT = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+IMAGE_READ_FLAGS = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
 
 
 class UpstreamError(Exception):
@@ -31,6 +35,10 @@ class UpstreamError(Exception):
 
 
 class DownloadInterrupted(Exception):
+    pass
+
+
+class _ImageTransportError(UpstreamError):
     pass
 
 
@@ -159,12 +167,16 @@ class Source:
     quality: str
     suffix: str
     url: str
+    source_id: str | None = None
+    image_updated_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class Asset:
     stem: str
     sources: tuple[Source, ...]
+    legacy_border: bool = False
+    languages: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,27 +186,116 @@ class SavedImage:
     size: int
     sha256: str | None
     language: str | None
+    file_name: str | None = None
+    source_id: str | None = None
+    image_updated_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LocalImage:
+    path: Path
+    info: os.stat_result
+    saved: SavedImage | None
+    shape: ImageSize | None
+    legacy: bool
 
 
 class BelowQuality(Exception):
     pass
 
 
-def _read_local(path: Path, info, previous: SavedImage | None, sources: tuple[Source, ...]):
-    with path.open("rb") as file:
-        if not os.path.samestat(info, os.fstat(file.fileno())):
-            raise OSError(f"Image changed while opening {path.name}")
-        suffix = path.suffix
-        indexed = previous is not None and previous.suffix == suffix and previous.sha256 is not None
+def _same_image(expected: os.stat_result, actual: os.stat_result) -> bool:
+    return (os.path.samestat(expected, actual) and expected.st_mode == actual.st_mode
+            and expected.st_size == actual.st_size and expected.st_mtime_ns == actual.st_mtime_ns
+            and expected.st_ctime_ns == actual.st_ctime_ns)
+
+
+def _unchanged(path: Path, expected: os.stat_result | None):
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        if expected is None:
+            return
+    else:
+        if expected is not None and _same_image(expected, current):
+            return
+    raise OSError(f"Image changed while checking {path}")
+
+
+def _read_local(path: Path, info: os.stat_result, previous: SavedImage | None,
+                sources: tuple[Source, ...], legacy: bool) -> tuple[SavedImage, ImageSize]:
+    suffix = path.suffix
+    file_name = path.name if legacy else None
+    indexed = (previous is not None and previous.suffix == suffix and previous.sha256 is not None
+               and previous.file_name == file_name)
+    with os.fdopen(os.open(path, IMAGE_READ_FLAGS), "rb") as file:
+        if not _same_image(info, os.fstat(file.fileno())):
+            raise OSError(f"Image changed while opening {path}")
         shape = image_size(file, suffix, info.st_size, check_png_chunks=not indexed)
         file.seek(0)
         digest = hashlib.file_digest(file, "sha256").hexdigest()
-    if indexed:
-        if digest != previous.sha256:
-            raise InvalidImage("Image SHA-256 no longer matches")
-        language = previous.language or next((s.language for s in sources if s.url == previous.url), None)
-        return SavedImage(previous.url, suffix, info.st_size, digest, language), shape
-    return SavedImage(None, suffix, info.st_size, digest, None), shape
+        if not _same_image(info, os.fstat(file.fileno())):
+            raise OSError(f"Image changed while reading {path}")
+    if not indexed:
+        return SavedImage(None, suffix, info.st_size, digest, None, file_name), shape
+    if digest != previous.sha256:
+        raise InvalidImage("Image SHA-256 no longer matches")
+    language, source_id, updated = previous.language, previous.source_id, previous.image_updated_at
+    if previous.url and (language is None or source_id is None or updated is None):
+        for source in sources:
+            if (source.url == previous.url and source.suffix == suffix
+                    and language in (None, source.language) and source_id in (None, source.source_id)):
+                language = language or source.language
+                source_id = source_id or source.source_id
+                updated = updated or source.image_updated_at
+                break
+    return SavedImage(previous.url, suffix, info.st_size, digest, language, file_name, source_id, updated), shape
+
+
+def _image_path(stem: Path, suffix: str) -> Path:
+    return stem.with_name(stem.name + suffix)
+
+
+def _image_stem(root: Path, asset: Asset) -> Path:
+    relative = Path(asset.stem)
+    if not relative.name or relative.is_absolute() or ".." in relative.parts:
+        raise OSError(f"Unsafe image stem: {asset.stem}")
+    directory = root
+    for component in (None, *relative.parent.parts):
+        if component is not None:
+            directory /= component
+        try:
+            if not stat.S_ISDIR(directory.lstat().st_mode):
+                raise OSError(f"Expected a real image directory: {directory}")
+        except FileNotFoundError:
+            break
+    return root / relative
+
+
+def _iter_local(stem: Path, asset: Asset, previous: SavedImage | None, stop, webp: bool):
+    suffixes = IMAGE_SUFFIXES if webp else IMAGE_SUFFIXES[:-1]
+    stems = (stem, _image_path(stem, "border")) if asset.legacy_border else (stem,)
+    for key in stems:
+        legacy = key != stem
+        for suffix in suffixes:
+            check_interrupted(stop)
+            path = _image_path(key, suffix)
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                raise OSError(f"Not a regular file: {path}")
+            try:
+                saved, shape = _read_local(path, info, previous, asset.sources, legacy)
+            except InvalidImage:
+                saved = shape = None
+            yield LocalImage(path, info, saved, shape, legacy)
+
+
+def local_images(root: Path, asset: Asset, previous: SavedImage | None, stop, webp: bool) -> list[LocalImage]:
+    """Inspect every existing Forge lookup candidate in order, including invalid images."""
+    return list(_iter_local(_image_stem(root, asset), asset, previous, stop, webp))
 
 
 def save_image(reply, file, suffix: str, stop) -> tuple[int, str, ImageSize]:
@@ -211,7 +312,10 @@ def save_image(reply, file, suffix: str, stop) -> tuple[int, str, ImageSize]:
     size = 0
     while True:
         check_interrupted(stop)
-        block = reply.read(128 * 1024)
+        try:
+            block = reply.read(128 * 1024)
+        except (OSError, http.client.HTTPException) as exc:
+            raise _ImageTransportError(str(exc)) from exc
         if not block:
             break
         size += len(block)
@@ -235,23 +339,32 @@ def _retry_after(value: str | None) -> float:
         return 0
 
 
-def _fetch_image(web: Web, path: Path, source: Source, stop, minimum: str | None,
-                 local_shapes: tuple[ImageSize, ...]) -> tuple[SavedImage, ImageSize] | None:
+def _fetch_image(web: Web, path: Path, source: Source, stop, accepts, before_replace) -> tuple[SavedImage, ImageSize] | None:
     def write(file):
         size, digest, shape = save_image(reply, file, source.suffix, stop)
-        if minimum is not None and (not shape.meets(minimum) or not all(shape.improves(old) for old in local_shapes)):
+        if not accepts(shape):
             raise BelowQuality
         check_interrupted(stop)
         # Forge clients do not necessarily share the downloader's UID.
         os.chmod(file.name, 0o644)
-        return SavedImage(source.url, source.suffix, size, digest, source.language), shape
+        before_replace()
+        saved = SavedImage(source.url, source.suffix, size, digest, source.language,
+                           source_id=source.source_id, image_updated_at=source.image_updated_at)
+        return saved, shape
 
     for attempt in range(IMAGE_ATTEMPTS):
         check_interrupted(stop)
         delay = 2 ** attempt
         last_attempt = attempt == IMAGE_ATTEMPTS - 1
         try:
-            with web.open(source.url, "cards.scryfall.io", "image/png,image/jpeg") as reply:
+            try:
+                reply = web.open(source.url, "cards.scryfall.io", IMAGE_ACCEPT[source.suffix])
+            except HTTPError:
+                raise
+            except (OSError, http.client.HTTPException) as exc:
+                raise _ImageTransportError(str(exc)) from exc
+            with reply:
+                before_replace()
                 return atomic_write(path, write)
         except BelowQuality:
             return None
@@ -263,82 +376,149 @@ def _fetch_image(web: Web, path: Path, source: Source, stop, minimum: str | None
                 if (last_attempt or delay > MAX_RETRY_DELAY
                         or not (exc.code in (408, 429) or 500 <= exc.code < 600)):
                     raise UpstreamError(f"Image CDN returned HTTP {exc.code}") from exc
-        except (InvalidImage, OSError, http.client.HTTPException):
+        except (InvalidImage, _ImageTransportError):
             if last_attempt:
                 raise
         if stop.wait(delay):
             raise DownloadInterrupted
 
 
-def download(web: Web, root: Path, asset: Asset, previous: SavedImage | None, stop, minimum: str | None):
-    """Inspect Forge's exact keys first; only an explicit minimum may replace a valid image."""
-    stem = root / asset.stem
-    directory = root
-    for component in stem.parent.relative_to(root).parts:
-        directory /= component
-        try:
-            if not stat.S_ISDIR(directory.lstat().st_mode):
-                raise OSError(f"Expected a real image directory: {directory}")
-        except FileNotFoundError:
+def _scan_date(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        date = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return date if date.utcoffset() == timedelta(0) else None
+
+
+def _masking_paths(stem: Path, selected: Path, webp: bool):
+    for suffix in IMAGE_SUFFIXES if webp else IMAGE_SUFFIXES[:-1]:
+        path = _image_path(stem, suffix)
+        if path == selected:
             break
+        yield path
 
-    jpg = stem.with_name(stem.name + ".jpg")
-    jpeg = None
 
-    def retire_jpeg(saved: SavedImage):
-        if saved.suffix == ".png" and jpeg is not None:
-            current = jpg.lstat()
-            if not os.path.samestat(jpeg, current) or jpeg.st_mtime_ns != current.st_mtime_ns:
-                raise OSError(f"Image changed while checking {jpg}")
-            # A broken or superseded same-key JPEG would mask this PNG in Forge.
-            jpg.unlink()
+def _retire_masking(paths: tuple[Path, ...], known: dict[Path, LocalImage]):
+    for path in paths:
+        # A broken or superseded canonical variant must not mask the chosen image in Forge.
+        image = known.get(path)
+        if image is not None:
+            _unchanged(path, image.info)
+            path.unlink()
 
-    local = []
-    for suffix in IMAGE_SUFFIXES:
+
+def download(web: Web, root: Path, asset: Asset, previous: SavedImage | None, stop, minimum: str | None,
+             webp: bool = False, refresh_language: bool = False,
+             refresh_scan: bool = False) -> tuple[str, SavedImage | None, bool]:
+    """Reuse Forge's lookup order unless an explicit policy allows a verified replacement."""
+    stem = _image_stem(root, asset)
+    known = {}
+    valid = []
+    first_valid = selected = None
+    legacy_seen = False
+    for image in _iter_local(stem, asset, previous, stop, webp):
+        known[image.path] = image
+        # Do not choose a legacy image masked by another legacy name: never remove aliases.
+        selectable = not image.legacy or not legacy_seen
+        legacy_seen |= image.legacy
+        if image.shape is None:
+            continue
+        if selectable and first_valid is None:
+            first_valid = image
+        if selectable and selected is None and (minimum is None or (
+            image.shape.meets(minimum) and all(image.shape.improves(old.shape) for old in valid)
+        )):
+            selected = image
+            if not (refresh_language or refresh_scan):
+                break
+        valid.append(image)
+
+    if selected is None:
+        selected = first_valid
+
+    def cached():
         check_interrupted(stop)
-        path = stem.with_name(stem.name + suffix)
-        try:
-            info = path.lstat()
-        except FileNotFoundError:
-            continue
-        if not stat.S_ISREG(info.st_mode):
-            raise OSError(f"Not a regular file: {path}")
-        if suffix == ".jpg":
-            jpeg = info
-        try:
-            saved, shape = _read_local(path, info, previous, asset.sources)
-        except InvalidImage:
-            continue
-        if minimum is None or (shape.meets(minimum) and all(shape.improves(old) for _, old in local)):
-            check_interrupted(stop)
-            retire_jpeg(saved)
-            return "cached", saved, False
-        local.append((saved, shape))
+        masking = tuple(_masking_paths(stem, selected.path, webp))
+        if any(path in known for path in masking):
+            _unchanged(selected.path, selected.info)
+            for path in masking:
+                _unchanged(path, known[path].info if path in known else None)
+            _retire_masking(masking, known)
+        return "cached", selected.saved, minimum is not None and not selected.shape.meets(minimum)
 
-    local_shapes = tuple(shape for _, shape in local)
-    invalid = None
-    for source in asset.sources:
-        if local:
-            nominal = ImageSize(*QUALITY[source.quality], source.suffix)
-            if (not nominal.meets(minimum) or not all(nominal.improves(shape) for shape in local_shapes)
-                    or any(source.url == saved.url for saved, _ in local)):
+    if selected is not None and not (refresh_language or refresh_scan) and (
+        minimum is None or selected.shape.meets(minimum)
+    ):
+        return cached()
+
+    sources = asset.sources if webp else tuple(source for source in asset.sources if source.suffix != ".webp")
+    rank = {}
+    if refresh_language:
+        languages = asset.languages or dict.fromkeys(source.language for source in sources)
+        rank = {language: idx for idx, language in enumerate(languages)}
+    old = selected.saved if selected else None
+    old_date = _scan_date(old.image_updated_at) if old and refresh_scan else None
+    below_quality = minimum is not None and selected is not None and not selected.shape.meets(minimum)
+    failure = None
+    for source in sources:
+        path = _image_path(stem, source.suffix)
+        masking = tuple(_masking_paths(stem, path, webp))
+        refresh = False
+        if selected:
+            same_url = any(source.url == image.saved.url for image in valid)
+            preferred = (refresh_language and old.language is not None
+                         and rank.get(source.language, len(rank)) < rank.get(old.language, len(rank)))
+            updated = (_scan_date(source.image_updated_at)
+                       if old_date is not None and old.source_id is not None and old.source_id == source.source_id
+                       and old.language is not None and old.language == source.language else None)
+            newer = updated is not None and updated > old_date
+            # Normally reuse an exact URL, except when the API proves its contents changed.
+            if same_url and not newer:
                 continue
-        path = stem.with_name(stem.name + source.suffix)
+            refresh = preferred or newer
+            if not refresh:
+                if not below_quality:
+                    continue
+                nominal = ImageSize(*QUALITY[source.quality], source.suffix)
+                if not nominal.meets(minimum) or not all(nominal.improves(image.shape) for image in valid):
+                    continue
+
+        shapes = tuple(image.shape for image in valid
+                       if image is selected or image.path == path or image.path in masking) if refresh else ()
+        if refresh and source.suffix != ".png" and any(shape.suffix == ".png" for shape in shapes):
+            continue
+
+        def accepts(shape):
+            if selected is None:
+                return True
+            if minimum is not None and not shape.meets(minimum):
+                return False
+            if refresh:
+                return all(shape.short >= prior.short and shape.long >= prior.long for prior in shapes)
+            return all(shape.improves(image.shape) for image in valid)
+
+        def before_replace():
+            _image_stem(root, asset)
+            for candidate in (*masking, path):
+                _unchanged(candidate, known[candidate].info if candidate in known else None)
+            if selected is not None and selected.path != path and selected.path not in masking:
+                _unchanged(selected.path, selected.info)
+
         try:
-            result = _fetch_image(web, path, source, stop, minimum if local else None, local_shapes)
-        except InvalidImage as exc:
-            invalid = exc
+            result = _fetch_image(web, path, source, stop, accepts, before_replace)
+        except (InvalidImage, UpstreamError) as exc:
+            failure = exc
             continue
         if result is None:
             continue
         saved, shape = result
-        retire_jpeg(saved)
+        _retire_masking(masking, known)
         return "downloaded", saved, minimum is not None and not shape.meets(minimum)
-    if local:
-        saved = local[0][0]
-        check_interrupted(stop)
-        retire_jpeg(saved)
-        return "cached", saved, True
-    if invalid is not None:
-        raise invalid
+    if selected is not None:
+        return cached()
+    if failure is not None:
+        raise failure
     return "unavailable", None, False

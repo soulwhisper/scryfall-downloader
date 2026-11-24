@@ -5,7 +5,7 @@ import struct
 import zlib
 
 
-IMAGE_SUFFIXES = (".jpg", ".png")  # Forge probes JPEG before PNG.
+IMAGE_SUFFIXES = (".jpg", ".png", ".webp")  # Forge's lookup order.
 QUALITY = {"small": (146, 204), "normal": (488, 680), "large": (672, 936), "png": (744, 1040)}
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 PNG_END = b"\x00\x00\x00\x00IEND\xaeB`\x82"
@@ -96,18 +96,116 @@ def _jpeg_size(file, size: int) -> tuple[int, int]:
     raise InvalidImage("Incomplete JPEG header or scan")
 
 
-def image_size(file, suffix: str, size: int, *, check_png_chunks: bool = True) -> ImageSize:
-    end = PNG_END if suffix == ".png" else b"\xff\xd9"
-    if size < 32:
-        raise InvalidImage("Incomplete image")
-    file.seek(size - len(end))
-    if file.read(len(end)) != end:
-        raise InvalidImage("Missing image end marker")
+def _webp_frame_size(file, kind: bytes, length: int) -> tuple[int, int]:
+    if kind == b"VP8L":
+        header = file.read(min(length, 5))
+        if length <= 5 or len(header) != 5 or header[0] != 0x2f:
+            raise InvalidImage("Incomplete WebP lossless frame")
+        bits = int.from_bytes(header[1:], "little")
+        if bits >> 29:
+            raise InvalidImage("Unsupported WebP lossless version")
+        return (bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1
+
+    header = file.read(min(length, 10))
+    if length <= 10 or len(header) != 10 or header[3:6] != b"\x9d\x01\x2a":
+        raise InvalidImage("Incomplete WebP lossy frame")
+    tag = int.from_bytes(header[:3], "little")
+    partition = tag >> 5
+    if tag & 1 or ((tag >> 1) & 7) > 3 or not tag & 0x10 or not 0 < partition < length - 10:
+        raise InvalidImage("Invalid WebP key frame")
+    width, height = struct.unpack_from("<HH", header, 6)
+    return width & 0x3fff, height & 0x3fff
+
+
+def _webp_size(file, size: int) -> tuple[int, int]:
+    # RFC 9649: validate the still-image container and frame headers, not compressed pixels.
+    if size > 0xfffffffe or size % 2 or file.seek(0, 2) != size:
+        raise InvalidImage("Invalid WebP file size")
     file.seek(0)
-    if suffix == ".png":
-        width, height = _png_size(file, size, check_png_chunks)
+    header = file.read(12)
+    if (len(header) != 12 or header[:4] != b"RIFF" or header[8:] != b"WEBP"
+            or int.from_bytes(header[4:8], "little") != size - 8):
+        raise InvalidImage("Invalid WebP RIFF header")
+
+    canvas = frame = None
+    flags = metadata = 0
+    alpha = False
+    while file.tell() < size:
+        first = file.tell() == 12
+        chunk = file.read(8)
+        if len(chunk) != 8:
+            raise InvalidImage("Incomplete WebP chunk header")
+        kind, length = struct.unpack("<4sI", chunk)
+        end = file.tell() + length
+        if end + (length & 1) > size:
+            raise InvalidImage("Incomplete WebP chunk")
+        if first and kind not in (b"VP8X", b"VP8 ", b"VP8L"):
+            raise InvalidImage("Missing WebP image header")
+
+        if kind == b"VP8X":
+            if not first or length != 10:
+                raise InvalidImage("Invalid extended WebP header")
+            extended = file.read(10)
+            if len(extended) != 10:
+                raise InvalidImage("Incomplete extended WebP header")
+            flags = extended[0]
+            if flags & 2:
+                raise InvalidImage("Animated WebP is not a still image")
+            width = int.from_bytes(extended[4:7], "little") + 1
+            height = int.from_bytes(extended[7:], "little") + 1
+            if width * height > 0xffffffff:
+                raise InvalidImage("Invalid extended WebP canvas")
+            canvas = width, height
+        elif kind in (b"VP8 ", b"VP8L"):
+            if frame is not None or (alpha and kind == b"VP8L"):
+                raise InvalidImage("Invalid WebP image chunk sequence")
+            frame = _webp_frame_size(file, kind, length)
+            if canvas and (frame != canvas or (kind == b"VP8 " and bool(flags & 0x10) != alpha)):
+                raise InvalidImage("WebP frame does not match its canvas or alpha flags")
+        elif kind == b"ALPH":
+            if not canvas or not flags & 0x10 or alpha or frame is not None or length < 2:
+                raise InvalidImage("Invalid WebP alpha chunk")
+            method = file.read(1)
+            if not method:
+                raise InvalidImage("Incomplete WebP alpha data")
+            compression = method[0] & 3
+            if compression > 1 or (compression == 0 and length != 1 + canvas[0] * canvas[1]):
+                raise InvalidImage("Invalid WebP alpha data")
+            alpha = True
+        elif kind == b"ICCP":
+            if not canvas or frame is not None or alpha or not length:
+                raise InvalidImage("Invalid WebP profile chunk")
+            metadata |= 0x20
+        elif kind in (b"EXIF", b"XMP "):
+            if not canvas:
+                raise InvalidImage("Invalid WebP metadata chunk")
+            metadata |= 8 if kind == b"EXIF" else 4
+        elif kind in (b"ANIM", b"ANMF"):
+            raise InvalidImage("Animated WebP is not a still image")
+
+        file.seek(end)
+        if length & 1 and file.read(1) != b"\0":
+            raise InvalidImage("Invalid WebP chunk padding")
+    if frame is None or flags & 0x2c != metadata:
+        raise InvalidImage("Missing WebP image data or metadata")
+    return frame
+
+
+def image_size(file, suffix: str, size: int, *, check_png_chunks: bool = True) -> ImageSize:
+    if suffix == ".webp":
+        width, height = _webp_size(file, size)
     else:
-        width, height = _jpeg_size(file, size)
+        end = PNG_END if suffix == ".png" else b"\xff\xd9"
+        if size < 32:
+            raise InvalidImage("Incomplete image")
+        file.seek(size - len(end))
+        if file.read(len(end)) != end:
+            raise InvalidImage("Missing image end marker")
+        file.seek(0)
+        if suffix == ".png":
+            width, height = _png_size(file, size, check_png_chunks)
+        else:
+            width, height = _jpeg_size(file, size)
     if not width or not height:
         raise InvalidImage("Invalid image dimensions")
     return ImageSize(min(width, height), max(width, height), suffix)
