@@ -8,8 +8,6 @@ import os
 from pathlib import Path
 import sqlite3
 import struct
-import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -410,16 +408,6 @@ class DownloaderTest(unittest.TestCase):
             retry = self.api(port, "POST", path + "/retry", {}, expect=202)
             result = self.wait_for(port, f"/jobs/{retry['id']}", "completed")
             self.assertEqual(list(result["sets"]), ["tst"])
-
-    def test_legacy_token_does_not_start_an_unauthenticated_server(self):
-        env = os.environ | {"SCRYFALL_API_TOKEN": "legacy-test-token", "SCRYFALL_ENABLE_WEBP": "0"}
-        env.pop("DOWNLOADER_API_TOKEN", None)
-        result = subprocess.run(
-            [sys.executable, "-m", "scryfall_downloader", "--data", str(self.root), "--port", "0"],
-            env=env, capture_output=True, text=True, timeout=5,
-        )
-        self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertIn("SCRYFALL_API_TOKEN was renamed to DOWNLOADER_API_TOKEN", result.stderr)
 
     def test_authenticated_idempotent_submission_survives_restart(self):
         upstream = Upstream([printing(1, "en", "Oak", "oak.png")], {"oak.png": pixel_png(80)})

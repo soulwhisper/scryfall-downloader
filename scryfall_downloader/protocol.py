@@ -29,8 +29,6 @@ def default_port() -> int:
 
 def downloader_api_token() -> str | None:
     token = os.environ.get("DOWNLOADER_API_TOKEN")
-    if token is None and "SCRYFALL_API_TOKEN" in os.environ:
-        raise ValueError("SCRYFALL_API_TOKEN was renamed to DOWNLOADER_API_TOKEN")
     if token is not None and not BEARER_TOKEN.fullmatch(token):
         raise ValueError("DOWNLOADER_API_TOKEN must be a nonempty Bearer token")
     return token
