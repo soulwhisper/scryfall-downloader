@@ -8,6 +8,7 @@ import re
 import unicodedata
 from urllib.error import HTTPError
 from urllib.parse import quote
+from uuid import UUID
 
 from upstream import Asset, NETWORK_ERRORS, Source, UpstreamError, Web, atomic_write, fresh
 
@@ -21,7 +22,9 @@ eternal|conjured|scheme|printsheets""".replace("\n", "").split("|"))
 CARD_ROW = re.compile(r"(?:(\S*\d\S*)\s+)?(?:[SCURML]\s+)?([^@$]+?)(?: @[^$]*)?(?: \$\{(.+)\})?$")
 TOKEN_ROW = re.compile(r"(\S*\d\S*)\s+([^@]+?)(?: @.*)?$")
 VARIANT_PARAMS = re.compile(r'"(flavorname|variant)"\s*:\s*"([^"]+)"', re.I)
-FORMATS = (("png", ".png"), ("large", ".jpg"), ("normal", ".jpg"), ("jpeg", ".jpg"), ("small", ".jpg"))
+FORMATS = (("png", "png", ".png"), ("display", "large", ".webp"), ("large", "large", ".jpg"),
+           ("grid", "normal", ".webp"), ("normal", "normal", ".jpg"), ("jpeg", "normal", ".jpg"),
+           ("thumb", "small", ".webp"), ("small", "small", ".jpg"))
 TWO_SIDES = frozenset({"transform", "modal_dfc", "double_faced_token", "battle", "art_series", "reversible_card"})
 TOKEN_LAYOUTS = frozenset({"token", "double_faced_token", "emblem"})
 
@@ -164,7 +167,8 @@ def face_names(card: dict) -> list[str]:
     return [card["name"]]
 
 
-def image_sources(prints: dict[str, dict], side: int, languages: list[str]) -> tuple[Source, ...]:
+def image_sources(prints: dict[str, dict], side: int, languages: list[str],
+                  webp: bool = False) -> tuple[Source, ...]:
     sources = []
     seen = set()
     for lang in languages:
@@ -176,15 +180,23 @@ def image_sources(prints: dict[str, dict], side: int, languages: list[str]) -> t
             images = faces[side].get("image_uris") or {}
         else:
             images = card.get("image_uris") or {}
-        for version, suffix in FORMATS:
+        ident = card.get("id")
+        updated = card.get("image_updated_at")
+        try:
+            source_id = str(UUID(ident)) if isinstance(ident, str) else None
+        except ValueError:
+            source_id = None
+        for version, quality, suffix in FORMATS:
+            if suffix == ".webp" and not webp:
+                continue
             if (url := images.get(version)) and url not in seen:
                 seen.add(url)
-                sources.append(Source(lang, "normal" if version == "jpeg" else version, suffix, url))
+                sources.append(Source(lang, quality, suffix, url, source_id, updated if isinstance(updated, str) else None))
     return tuple(sources)
 
 
 def plan_images(code: str, cards: list[dict], edition: Edition | None,
-                languages: list[str]) -> tuple[list[Asset], int, int]:
+                languages: list[str], webp: bool = False) -> tuple[list[Asset], int, int]:
     prints = defaultdict(dict)
     for card in cards:
         prints[card["collector_number"], card["name"]][card["lang"]] = card
@@ -197,6 +209,7 @@ def plan_images(code: str, cards: list[dict], edition: Edition | None,
                for name, numbers in arts.items() for i, number in enumerate(numbers, 1)}
 
     folder = edition.folder if edition else code.upper()
+    preferred = tuple(languages)
     desired = []
     for (number, full_name), langs in ordered:
         card = langs.get("en") or next(iter(langs.values()))
@@ -213,6 +226,7 @@ def plan_images(code: str, cards: list[dict], edition: Edition | None,
         art = entry.art_suffix if entry else indexes[names[0], number]
         for side, name in enumerate(names):
             face_layout = faces[side].get("layout", layout) if layout == "reversible_card" and faces else layout
+            legacy = False
             if token_set or face_layout in TOKEN_LAYOUTS:
                 token_number = number if side == 0 else number + "☇"
                 slugs = edition.tokens.get(token_number) if edition else None
@@ -230,7 +244,9 @@ def plan_images(code: str, cards: list[dict], edition: Edition | None,
                         name = names[0]
                 infix = "" if face_layout == "planar" else ".full"
                 stem = f"pics/cards/{folder}/{filename(name)}{art}{infix}"
-            desired.append((not found, number, name, side, Asset(stem, image_sources(langs, side, languages))))
+                legacy = found and infix == ".full"
+            sources = image_sources(langs, side, languages, webp)
+            desired.append((not found, number, name, side, Asset(stem, sources, legacy, preferred)))
 
     assets = []
     occupied = set()
@@ -240,7 +256,8 @@ def plan_images(code: str, cards: list[dict], edition: Edition | None,
         key = asset.stem.casefold()
         if key in occupied:
             collisions += 1
-            asset = Asset(f"extras/{code.upper()}/{filename(number)}_{filename(name)}_{side + 1}_{collisions}", asset.sources)
+            stem = f"extras/{code.upper()}/{filename(number)}_{filename(name)}_{side + 1}_{collisions}"
+            asset = Asset(stem, asset.sources, languages=preferred)
         occupied.add(asset.stem.casefold())
         assets.append(asset)
     return assets, len(prints), collisions

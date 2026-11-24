@@ -55,7 +55,7 @@ jobs:
           python-version: '3.11'
 
       - name: Run downloader tests
-        run: python -m unittest -v test_downloader
+        run: python -m unittest discover -v
 
       - name: Build and smoke-test the container
         shell: bash
@@ -69,7 +69,7 @@ jobs:
           trap 'docker rm -f "$container" >/dev/null' EXIT
           address=$(docker port "$container" 8765/tcp)
           if ! curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 1 \
-            --max-time 5 "http://$address/jobs" | jq -e '.jobs == []'; then
+            --max-time 5 "http://$address/health" | jq -e '.status == "ok"'; then
             docker logs "$container"
             exit 1
           fi

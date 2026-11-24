@@ -3,5 +3,8 @@
 !downloader.py
 !forge.py
 !imagefiles.py
+!maintenance.py
 !ownership.py
+!set_catalog.py
+!sync.py
 !upstream.py

@@ -8,7 +8,7 @@ Download images for selected Magic: The Gathering sets through a local REST API.
 python3 downloader.py
 ```
 
-The server listens on `127.0.0.1:8765`. `--data DIR` selects the output and cache directory (default: `data/` next to the program). `--forge-editions /path/to/Forge/res/editions` uses the edition files from your Forge release instead of looking them up on GitHub. Keep one downloader per data directory. The API has no authentication; do not expose it publicly.
+The server listens on `127.0.0.1:8765`. `--data DIR` selects the output and cache directory (default: `data/` next to the program). `--forge-editions /path/to/Forge/res/editions` uses the edition files from your Forge release instead of looking them up on GitHub. Keep one downloader per data directory. Keep the API on a trusted network; set `SCRYFALL_API_TOKEN` to require an `Authorization: Bearer …` header for catalogue and job operations. Use TLS at a reverse proxy if requests cross an untrusted link.
 
 ## Submit and control downloads
 
@@ -28,26 +28,45 @@ curl -X POST "http://127.0.0.1:8765/jobs/$job_id/resume"
 ```
 
 - `POST /jobs`: accepts 1–10 exact Scryfall set codes, case-insensitive. Returns `202 Accepted` and a `Location` header. Request a separate token set such as `tmom` explicitly. `languages` is an optional preference list shared by all requested sets, defaulting to `["zhs","en"]`. Use `["ja"]` for Japanese only or `["ja","en"]` for Japanese with English fallback. Use [Scryfall language codes](https://scryfall.com/docs/api/languages); `zh-CN` and `zh-TW` are aliases for `zhs` and `zht`.
-- Include `"min_quality":"png"` to upgrade valid images only when a higher-quality scan meets that floor. Other floors are `large` (672 × 936), `normal` (488 × 680), and `small` (146 × 204). The `png` floor also requires lossless PNG at 744 × 1040 or larger. Either orientation counts. Without a floor, a valid local image is never replaced to change quality or language.
+- Send an `Idempotency-Key` header to retry a submission without creating another job. The same normalized request and key return the original job, even after a server restart; a changed request returns `409`. Keys are retained with the latest 100 jobs, not indefinitely.
+- Include `"min_quality":"png"` to upgrade a valid image only to an improved scan meeting that floor. Other floors are `large` (672 × 936), `normal` (488 × 680), and `small` (146 × 204). The `png` floor also requires lossless PNG at 744 × 1040 or larger. Either orientation counts.
 - `GET /jobs/{id}`: shows totals and per-set progress. `cached` includes validated files already on disk; imported files with no known language appear under `languages.unknown`. `below_quality` counts retained or newly fetched images that did not meet an explicit floor. Image totals are `null` until the set is resolved. Each face is counted separately.
 - `GET /jobs`: lists recent jobs. Terminal job states are `completed`, `partial`, and `failed`.
+- `GET /sets`: returns the 24-hour Scryfall set catalogue, including release dates, set types, and `parent_set_code` for related token sets. `GET /health`: checks the local job worker (`200` or `503`), without contacting Scryfall or requiring a token. Use a job's `updated_at` and progress to check for stalls.
 - `POST /jobs/{id}/pause`: parks a queued job immediately or returns `202` while a running job is `pausing`. Poll until `paused`; the downloader stops dispatching work and drains in-flight requests. `POST /jobs/{id}/resume` requeues a paused job under the same ID. Terminal jobs cannot be resumed; submit a new job to retry them.
 
 Job history, pause state, progress, and image checksums are stored in `images.sqlite3` under `--data`. After a restart, paused jobs stay paused; interrupted running jobs are requeued automatically. On resume, the active set's counts are rebuilt as its existing files are checked; valid images count as `cached` and are not fetched again. Earlier finished sets are not rerun.
+
+### Scan, tidy, and refresh
+
+- `{"sets":["msh"],"operation":"scan","min_quality":"large"}` inspects the local Forge keys without changing the library or fetching CDN images. Check `missing`, `unavailable`, `corrupt`, `below_quality`, `legacy`, and sample `issues` per set. Submit a download for that set to repair missing or corrupt images; include a quality floor only when upgrading.
+- `{"sets":["msh"],"operation":"tidy"}` previews confirmed `.fullborder` → `.full` renames. Review `issues` and repeat with `"apply":true` to apply a fresh check. Tidy preserves bytes and ownership, never overwrites a destination, and leaves conflicting, unknown, or hardlinked names alone. Apply requires POSIX directory operations and hard links. Stop other writers to the same image folders before applying.
+- Download jobs can opt into `"refresh_language":true` to prefer a higher-ranked language for an image of known provenance, or `"refresh_scan":true` to accept a later `image_updated_at` for the same printing and language. Refreshes must preserve or improve pixel dimensions and cannot replace a PNG with a lossy format. Untracked local images are not assumed to be in any language. These flags use the regular 24-hour metadata cache; they do not force an upstream refresh.
 
 Scryfall metadata is cached for 24 hours per set and language selection. English metadata is included as a naming and coverage reference even when English is not in the requested preference list.
 
 ## Images and Forge setup
 
-The downloader checks each printing and face in language preference order, skipping Scryfall placeholders. In each language it prefers Scryfall's native full-card PNG (normally 744 × 1040), then the largest Forge-compatible JPEG offered. It does not resize, crop, or re-encode images.
+For new images, the downloader checks language preferences first, skips placeholders, and prefers Scryfall's native full-card PNG (normally 744 × 1040), then the largest supported fallback in that language. It does not resize, crop, or re-encode images.
 
 Regular cards are saved under `data/pics/cards/<SHORT_CODE>/` with English names. For example, `MOM/Invasion of Ravnica.full.png` and `MOM/Guildpact Paragon.full.png`. Forge edition files provide the short folder code (`Code2`, when defined) and art numbering. When no matching metadata is available, the downloader uses the uppercase Scryfall code and infers art numbering; check the job warning and use your Forge edition files for sets whose names or numbering differ. Filename collisions that cannot share a Forge key go to `data/extras/` rather than overwrite another printing. Tokens go to `data/pics/tokens/`, using Forge's token names when the edition defines them.
 
-The downloader checks existing `.jpg` and `.png` files at the exact Forge key before requesting a CDN image, even if they were copied in manually. It checks image headers, dimensions and end markers, verifies PNG chunk checksums on new or unindexed files, and records SHA-256 for later reuse. Missing files and checksum failures are eligible for repair without a quality request. Unreadable files result in a permission error, not a blind replacement. Incomplete transfers and temporary CDN errors retry with backoff.
+The downloader checks existing files at the Forge key before requesting a CDN image, including manually copied files and confirmed `.fullborder` aliases. It checks image structure and dimensions, verifies PNG chunk checksums on new or unindexed files, and records SHA-256 for later reuse. Missing files and checksum failures are eligible for repair without a quality request. Unreadable files surface as permission errors. Incomplete transfers and temporary CDN errors retry with backoff.
 
-An explicit quality upgrade cannot reduce either pixel dimension. A valid current file is kept when no acceptable upgrade is available. A same-key JPEG that would mask a replacement PNG in Forge is removed only after a valid PNG is available. The downloader does not infer identities or rename other legacy filenames. `languages` controls new fetches only; use separate libraries for separate language collections.
+A valid current file is kept unless an explicitly requested upgrade or refresh is verified. An exact-key variant that would mask the replacement in Forge is removed only after a verified replacement is available. Use separate libraries for independent language collections.
 
 Point `cardPicsDir` in `forge.profile.properties` to the absolute path of `data/pics/cards/` and restart Forge. To use tokens, copy the corresponding folders from `data/pics/tokens/` into your Forge cache's `pics/tokens/`. Prefer a separate card image directory: existing JPEGs with the same stem can take precedence over PNGs in Forge.
+
+### WebP (opt-in)
+
+Set `SCRYFALL_ENABLE_WEBP=1` on the server only when every Forge client reading
+the library can load `.webp` images (see [Forge #12983](https://github.com/Card-Forge/forge/pull/12983)).
+It defaults to `0`. PNG remains first within a language; the enabled fallback
+order uses `display`, `grid`, and `thumb` at their corresponding quality tiers
+ahead of same-size JPEGs. WebP is saved and validated natively and follows
+Forge's JPG → PNG → WebP local lookup order. Older clients or a disabled
+downloader do not see the WebP as an available local image. Disabling the gate
+does not convert or delete previously saved WebP files.
 
 ### File ownership
 
@@ -60,6 +79,31 @@ sudo python3 downloader.py --data "$PWD/data" --uid 10001 --gid 10001 --repair-o
 ```
 
 Drop `--dry-run` to apply. The command runs offline and only changes mismatched directory and image ownership within `pics/cards`, `pics/tokens`, their parent `pics`, and `extras`. It skips symbolic links, hard-linked images, and non-image files and does not change permission bits, names, or SQLite ownership.
+
+## Scheduled sync without Hermes
+
+Run one invocation per tick from DSM Task Scheduler, systemd, or a Hermes
+script-only cron. No browser, model, or persistent client process is needed.
+
+```sh
+# Sync a curated set and all token children listed in the catalogue.
+python3 sync.py --api http://nas.homelab.internal:8765 --include-tokens --wait 1800 msh
+
+# Opt into recent paper core/expansion releases as well.
+python3 sync.py --api http://nas.homelab.internal:8765 --include-tokens --new-releases-days 30 --wait 1800
+```
+
+The client processes one set at a time and reports job IDs and terminal
+status. The default idempotency round is today's UTC date; set `--round ID`
+to control it. Repeat the same round and arguments after an uncertain
+submission. Matching active or paused jobs are reported without submitting
+duplicates or resuming them. `partial`, `failed`, or pending results exit
+nonzero; inspect the job instead of retrying a permanent missing image in
+a loop. `--wait` is an overall deadline (default 300 seconds); it does not
+cancel a submitted job. The client reads `SCRYFALL_API_TOKEN` when configured.
+The container includes `/app/sync.py`; a NAS task on the container host can
+also invoke `docker exec scryfall-downloader python /app/sync.py --include-tokens msh`
+without publishing the REST port.
 
 ## Proxy and container
 
@@ -83,6 +127,13 @@ podman run --rm --stop-timeout 30 --userns=keep-id --user "$(id -u):$(id -g)" \
 ```
 
 Keep the `/data` mount writable and reuse it across container replacements so the service can resume jobs. With Docker, replace `podman` with `docker` and omit `--userns=keep-id`. Pass lowercase environment names with `-e https_proxy -e no_proxy` if needed. For local Forge metadata, mount `res/editions` read-only and append `--forge-editions /editions` after the image name.
+To opt into WebP or API authentication, pass the corresponding environment
+variable with `-e SCRYFALL_ENABLE_WEBP` or `-e SCRYFALL_API_TOKEN`.
+
+Before upgrading a library, take a consistent backup of `/data` (including
+the SQLite state) and the mounted pictures. Restore the matching pre-upgrade
+state and pictures before downgrading to v0.2.0, which cannot write the new
+database schema.
 
 ## Release a version
 

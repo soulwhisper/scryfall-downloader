@@ -1,4 +1,5 @@
 from contextlib import closing, contextmanager
+import hashlib
 from http.client import HTTPConnection
 from io import BytesIO
 import json
@@ -77,12 +78,12 @@ class DownloaderTest(unittest.TestCase):
         self.editions.mkdir()
 
     @contextmanager
-    def server(self, upstream, rows):
+    def server(self, upstream, rows, *, token=None):
         (self.editions / "Test.txt").write_text("[metadata]\nCode=TST\nCode2=FT\n[cards]\n" + rows,
                                                encoding="utf-8")
         jobs = Jobs(self.root, 1, self.editions, None)
         jobs.web.open = upstream.open
-        with Server(("127.0.0.1", 0), jobs) as server:
+        with Server(("127.0.0.1", 0), jobs, token) as server:
             thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
             jobs.worker.start()
             thread.start()
@@ -93,20 +94,22 @@ class DownloaderTest(unittest.TestCase):
                 thread.join()
                 jobs.close()
 
-    def api(self, port, method, path, payload=None, expect=200):
+    def api(self, port, method, path, payload=None, expect=200, *, headers=None):
         with closing(HTTPConnection("127.0.0.1", port, timeout=3)) as conn:
             body = None if payload is None else json.dumps(payload).encode()
-            headers = {} if body is None else {"Content-Type": "application/json"}
+            headers = dict(headers or {})
+            if body is not None:
+                headers["Content-Type"] = "application/json"
             conn.request(method, path, body, headers)
             with conn.getresponse() as response:
                 data = json.load(response)
                 self.assertEqual(response.status, expect, data)
                 return data
 
-    def wait_for(self, port, path, status):
+    def wait_for(self, port, path, status, *, headers=None):
         deadline = time.monotonic() + 6
         while True:
-            job = self.api(port, "GET", path)
+            job = self.api(port, "GET", path, headers=headers)
             if job["status"] == status:
                 return job
             if job["status"] in {"completed", "partial", "failed"} or time.monotonic() >= deadline:
@@ -243,6 +246,76 @@ class DownloaderTest(unittest.TestCase):
             self.assertEqual(job["started_at"], paused["started_at"])
             self.assertEqual((job["sets"]["tst"]["downloaded"], job["sets"]["tst"]["cached"]), (2, 1))
             self.assertEqual(upstream.image_requests, ["1.png", "2.png", "2.png", "3.png"])
+
+    def test_authenticated_idempotent_submission_survives_restart(self):
+        upstream = Upstream([printing(1, "en", "Oak", "oak.png")], {"oak.png": pixel_png(80)})
+        rows = "1 C Oak\n"
+        request = {"sets": ["TST"]}
+        headers = {"Authorization": "Bearer private-test-token", "Idempotency-Key": "weekly.tst"}
+        with self.server(upstream, rows, token="private-test-token") as port:
+            self.assertEqual(self.api(port, "GET", "/health")["status"], "ok")
+            self.api(port, "GET", "/jobs", expect=401)
+            self.api(port, "POST", "/jobs", request, expect=401)
+            job = self.api(port, "POST", "/jobs", request, expect=202, headers=headers)
+            job_path = f"/jobs/{job['id']}"
+            self.api(port, "POST", job_path + "/pause", expect=401)
+            self.wait_for(port, job_path, "completed", headers=headers)
+        with self.server(upstream, rows, token="private-test-token") as port:
+            replay = self.api(port, "POST", "/jobs", {"sets": ["tst", "TST"]}, expect=202, headers=headers)
+            self.assertEqual(replay["id"], job["id"])
+            self.api(port, "POST", "/jobs", {**request, "min_quality": "large"}, expect=409, headers=headers)
+            self.assertEqual([j["id"] for j in self.api(port, "GET", "/jobs", headers=headers)["jobs"]], [job["id"]])
+        self.assertEqual(upstream.image_requests, ["oak.png"])
+
+    def test_v020_checksum_is_preserved_when_database_is_upgraded(self):
+        good = pixel_png(80)
+        wrong = pixel_png(90)
+        folder = self.root / "pics" / "cards" / "FT"
+        folder.mkdir(parents=True)
+        image = folder / "Oak.full.png"
+        image.write_bytes(wrong)
+        with closing(sqlite3.connect(self.root / "images.sqlite3")) as db, db:
+            db.execute("""CREATE TABLE images (
+                       stem TEXT PRIMARY KEY, url TEXT, suffix TEXT NOT NULL,
+                       size INTEGER NOT NULL, sha256 TEXT, language TEXT)""")
+            db.execute("INSERT INTO images VALUES (?, ?, ?, ?, ?, ?)",
+                       ("pics/cards/FT/Oak.full", IMAGE_ORIGIN + "oak.png", ".png",
+                        len(good), hashlib.sha256(good).hexdigest(), "en"))
+        upstream = Upstream([printing(1, "en", "Oak", "oak.png")], {"oak.png": good})
+        with self.server(upstream, "1 C Oak\n") as port:
+            job = self.api(port, "POST", "/jobs", {"sets": ["tst"]}, expect=202)
+            progress = self.wait_for(port, f"/jobs/{job['id']}", "completed")["sets"]["tst"]
+            self.assertEqual((progress["cached"], progress["downloaded"]), (0, 1))
+        self.assertEqual(image.read_bytes(), good)
+
+    def test_scan_preview_and_explicit_tidy_then_repair_missing(self):
+        card = pixel_png(90)
+        upstream = Upstream([printing(1, "en", "Oak", "oak.png"), printing(2, "en", "Pine", "pine.png")],
+                            {"pine.png": pixel_png(100)})
+        folder = self.root / "pics" / "cards" / "FT"
+        folder.mkdir(parents=True)
+        legacy = folder / "Oak.fullborder.png"
+        canonical = folder / "Oak.full.png"
+        legacy.write_bytes(card)
+        with self.server(upstream, "1 C Oak\n2 C Pine\n") as port:
+            def run(status, **options):
+                job = self.api(port, "POST", "/jobs", {"sets": ["tst"], **options}, expect=202)
+                return self.wait_for(port, f"/jobs/{job['id']}", status)["sets"]["tst"]
+
+            scan = run("partial", operation="scan", min_quality="large")
+            self.assertEqual((scan["missing"], scan["legacy"], scan["below_quality"]), (1, 1, 1))
+            preview = run("partial", operation="tidy")
+            self.assertEqual((preview["legacy"], preview["tidied"]), (1, 0))
+            self.assertEqual(legacy.read_bytes(), card)
+            self.assertFalse(canonical.exists())
+            self.assertEqual(upstream.image_requests, [])
+            tidy = run("partial", operation="tidy", apply=True)
+            self.assertEqual(tidy["tidied"], 1)
+            self.assertEqual(canonical.read_bytes(), card)
+            self.assertFalse(legacy.exists())
+            repaired = run("completed")
+            self.assertEqual((repaired["cached"], repaired["downloaded"]), (1, 1))
+            self.assertEqual(upstream.image_requests, ["pine.png"])
 
 
 if __name__ == "__main__":
