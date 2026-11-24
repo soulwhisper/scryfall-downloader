@@ -228,12 +228,10 @@ Use the bundled health command instead of a deployment-specific probe;
 it checks the versioned endpoint and can check upstream separately. Open
 the Web UI and check health before resuming scheduled work.
 
-When upgrading from v0.4.0 or earlier with authentication configured, rename
-`SCRYFALL_API_TOKEN` to `DOWNLOADER_API_TOKEN` in the server environment and
-sync scripts. Keep the token value and change the server environment key
-together with the image. With only the old variable, the server refuses to
-start rather than leaving the API unprotected. Restore the old variable name
-when rolling back to an image that expects it.
+When upgrading an authenticated deployment, set `DOWNLOADER_API_TOKEN` in
+the server and sync client environments before restarting. With the server
+variable unset, the API accepts unauthenticated requests. Before exposing
+the service, verify that a protected endpoint returns `401` without a token.
 
 To downgrade, restore the matching pre-upgrade state and pictures before
 starting the previous image. Version v0.2.0 cannot write the newer database
