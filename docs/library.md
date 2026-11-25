@@ -46,7 +46,8 @@ and relationship lookups are cached under the data directory. If a special
 card's relationship metadata is incomplete, the unresolved face is reported in
 `issues` rather than being silently treated as a complete Forge image. A
 Specialize group with missing relationship data is not written partially or
-allowed to produce duplicate color-face keys.
+allowed to produce duplicate color-face keys; its unresolved faces are
+reported as one grouped issue.
 
 To fill corrected paths in an existing library, rerun the affected sets.
 Old inferred files are not moved or deleted.

@@ -89,6 +89,21 @@ Name:Skanos, Green Dragon Vassal
         self.assertEqual(assets, [])
         self.assertTrue(any("metadata" in issue or "relationship" in issue for issue in issues))
 
+    def test_specialize_missing_relationships_are_reported_once_per_group(self):
+        names = ["Skanos, Dragon Vassal", "Skanos, White Dragon Vassal", "Skanos, Blue Dragon Vassal",
+                 "Skanos, Black Dragon Vassal", "Skanos, Red Dragon Vassal", "Skanos, Green Dragon Vassal"]
+        numbers = ["18", "18w", "18u", "18b", "18r", "18g"]
+        cards = [printing(i, number, name, "en", set_code="hbg") for i, (number, name) in enumerate(zip(numbers, names), 1)]
+        edition = Edition.parse("[metadata]\nCode=HBG\n[cards]\n" + "\n".join(f"{n} R {name}" for n, name in zip(numbers, names)) + "\n")
+        class Rules:
+            def face_rule(self, card):
+                return FaceRule(tuple(names), "specialize")
+        assets, _, issues = plan_images("hbg", cards, edition, ["en"], forge=Rules())
+        self.assertEqual(assets, [])
+        self.assertEqual(len(issues), 1)
+        for number in numbers:
+            self.assertIn(number, issues[0])
+
     def test_meld_back_uses_related_result_printing(self):
         result = printing(2, "15b", "Brisela, Voice of Nightmares", "en", set_code="emn", layout="meld")
         base = printing(1, "15", "Bruna, the Fading Light", "en", set_code="emn", layout="meld",

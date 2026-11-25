@@ -450,6 +450,12 @@ def _special_source(card, side, cards, forge):
     return card, _image_slot(card, side)
 
 
+def _specialize_issue(rule, cards):
+    base = rule.names[0]
+    numbers = sorted({card.get("collector_number", "") for card in cards if card.get("name") in rule.names})
+    return f"{'/'.join(numbers)} {base}: Specialize relationship metadata is incomplete; color faces are not independently resolved"
+
+
 def _forge_keys(code, card, edition, entry, indexes, forge=None):
     number = card["collector_number"]
     names = face_names(card)
@@ -633,7 +639,9 @@ def plan_images(
                 if all_languages or lang in language_rank:
                     sources.append((source_card, _printing_sources(source_card, source_side, webp)))
         if special_missing:
-            issues.append(f"{number} {name}: Specialize relationship metadata is incomplete; color faces are not independently resolved")
+            issue = _specialize_issue(rule, cards) if rule is not None else f"{number} {name}: Specialize relationship metadata is incomplete"
+            if issue not in issues:
+                issues.append(issue)
             continue
         if not candidates and not any(issue.startswith(f"{number} {name}: special face metadata")
                                       for issue in issues) and not (forge is not None and any(
