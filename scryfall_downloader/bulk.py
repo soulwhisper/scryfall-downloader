@@ -129,6 +129,14 @@ def _project(row):
                 raise ValueError(f"invalid {key}")
             card[key] = value
     _project_images(row, card)
+    if (parts := row.get("all_parts")) is not None:
+        if not isinstance(parts, list):
+            raise ValueError("invalid all_parts")
+        card["all_parts"] = []
+        for part in parts:
+            if not isinstance(part, dict):
+                raise ValueError("invalid related card")
+            card["all_parts"].append({key: _text(part, key) for key in ("id", "component", "name")})
     if (faces := row.get("card_faces")) is not None:
         if not isinstance(faces, list):
             raise ValueError("invalid card_faces")
