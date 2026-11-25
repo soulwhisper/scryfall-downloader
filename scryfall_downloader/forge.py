@@ -257,6 +257,8 @@ class ForgeEditions:
             related_name = related.get("name")
             if related_name in self.rule_by_face:
                 return self.rule_by_face[related_name]
+        if card.get("layout") != "meld" and not card.get("all_parts"):
+            return None
         if card.get("layout") != "meld" and not any(
                 part.get("component") in ("meld_part", "meld_result", "combo_piece")
                 or "Specialize" in part.get("type_line", "")
@@ -574,6 +576,7 @@ def plan_images(
         candidates = defaultdict(list)
         identity_candidates = defaultdict(list)
         merged_special = False
+        special_missing = False
         for card in prints[slot]:
             first_name = face_names(card)[0]
             entry = _edition_entry(edition, code, card, first_name)
@@ -581,14 +584,25 @@ def plan_images(
             if forge is not None and (rule := forge.face_rule(card)) is not None:
                 if rule.kind == "specialize" and card["name"] != rule.names[0]:
                     merged_special = True
+                    if not card.get("all_parts"):
+                        special_missing = True
                     continue
                 if rule.kind == "meld" and card["layout"] != "meld":
                     continue
                 if rule.kind == "meld" and card.get("collector_number", "").endswith("b"):
                     merged_special = True
                     continue
+            if card.get("layout") == "double_faced_token" and len(card.get("card_faces") or []) > 1:
+                registered = edition is not None and (number in edition.tokens or number + "☇" in edition.tokens)
+                if not registered and len({face.get("name") for face in card["card_faces"]}) > 1:
+                    issues.append(f"{number} {name}: unregistered token back face is not independently addressable by Forge")
+                    # Keep the front face only; Forge normalizes $alt to it.
+                    card = dict(card, card_faces=card["card_faces"][:1], name=face_names(card)[0])
             if card.get("layout") in ("meld", "reversible_card") and not card.get("all_parts") and not card.get("card_faces"):
                 issues.append(f"{number} {name}: special face metadata is incomplete; no independent back-face key")
+                continue
+            if forge is not None and (rule := forge.face_rule(card)) is not None and rule.kind == "specialize" and not card.get("all_parts"):
+                special_missing = True
                 continue
             if entry is None and not token and (
                 name in known_names or first_name in known_names or (edition and code in PLANECHASE_EDITIONS)
@@ -618,6 +632,9 @@ def plan_images(
                 lang = card["lang"]
                 if all_languages or lang in language_rank:
                     sources.append((source_card, _printing_sources(source_card, source_side, webp)))
+        if special_missing:
+            issues.append(f"{number} {name}: Specialize relationship metadata is incomplete; color faces are not independently resolved")
+            continue
         if not candidates and not any(issue.startswith(f"{number} {name}: special face metadata")
                                       for issue in issues) and not (forge is not None and any(
                 (rule := forge.face_rule(card)) is not None
@@ -639,8 +656,13 @@ def plan_images(
                 for source_card in identity_variants
             ))
             shared = stem.startswith("pics/tokens/") and len({card.get("id") for card in identity_variants if card.get("id")}) > 1
+            valid_source_ids = tuple(dict.fromkeys(
+                str(source_card["id"]) for source_card in identity_variants
+                if isinstance(source_card.get("id"), str)
+            ))
             asset = Asset(stem, sources, legacy, preferred, printing_key=printing_key,
-                          valid_printing_keys=valid_keys, inferred=not found, shared_token=shared)
+                          valid_printing_keys=valid_keys, inferred=not found, shared_token=shared,
+                          valid_source_ids=valid_source_ids)
             desired.append((not found, not sources, number, name, asset))
 
     assets = []

@@ -76,6 +76,19 @@ Name:Skanos, Green Dragon Vassal
                                              "Skanos, Blue Dragon Vassal", "Skanos, Black Dragon Vassal",
                                              "Skanos, Red Dragon Vassal", "Skanos, Green Dragon Vassal"), "specialize"))
 
+    def test_specialize_without_relationships_does_not_duplicate_color_keys(self):
+        names = ["Skanos, Dragon Vassal", "Skanos, White Dragon Vassal", "Skanos, Blue Dragon Vassal",
+                 "Skanos, Black Dragon Vassal", "Skanos, Red Dragon Vassal", "Skanos, Green Dragon Vassal"]
+        numbers = ["18", "18w", "18u", "18b", "18r", "18g"]
+        cards = [printing(i, number, name, "en", set_code="hbg") for i, (number, name) in enumerate(zip(numbers, names), 1)]
+        edition = Edition.parse("[metadata]\nCode=HBG\n[cards]\n" + "\n".join(f"{n} R {name}" for n, name in zip(numbers, names)) + "\n")
+        class Rules:
+            def face_rule(self, card):
+                return FaceRule(tuple(names), "specialize")
+        assets, _, issues = plan_images("hbg", cards, edition, ["en"], forge=Rules())
+        self.assertEqual(assets, [])
+        self.assertTrue(any("metadata" in issue or "relationship" in issue for issue in issues))
+
     def test_meld_back_uses_related_result_printing(self):
         result = printing(2, "15b", "Brisela, Voice of Nightmares", "en", set_code="emn", layout="meld")
         base = printing(1, "15", "Bruna, the Fading Light", "en", set_code="emn", layout="meld",
@@ -363,6 +376,26 @@ Code=SLD
             ("pics/tokens/TUST/1_Angel", [f"{CDN}/front.jpg"]),
         ])
 
+    def test_unregistered_different_name_token_back_reports_issue(self):
+        edition = Edition.parse("[metadata]\nCode=UST\nScryfallCode=UST\n")
+        card = printing(1, "1", "Copy // Horror", "en", set_code="tust", layout="double_faced_token",
+                        set_type="token", image_uris={}, card_faces=[
+                            {"name": "Copy", "image_uris": {"large": f"{CDN}/front.jpg"}},
+                            {"name": "Horror", "image_uris": {"large": f"{CDN}/back.jpg"}},
+                        ])
+        assets, _, issues = plan_images("tust", [card], edition, ["en"])
+        self.assertEqual([(a.stem, [s.url for s in a.sources]) for a in assets], [
+            ("pics/tokens/TUST/1_Copy", [f"{CDN}/front.jpg"]),
+        ])
+        self.assertTrue(any("not independently addressable" in issue for issue in issues))
+
+    def test_shared_token_source_ids_survive_language_filter(self):
+        edition = Edition.parse("[metadata]\nCode=ONE\n[tokens]\n11 c_1_1_a_phyrexian_mite\n")
+        cards = [printing(n, "11", "Phyrexian Mite", lang, set_code="tone", layout="token", set_type="token")
+                 for n, lang in ((1, "en"), (2, "zhs"))]
+        english, _, _ = plan_images("tone", cards, edition, ["en"])
+        self.assertEqual(set(english[0].valid_source_ids), {card["id"] for card in cards})
+
     def test_unregistered_different_name_token_back_is_not_addressable(self):
         edition = Edition.parse("[metadata]\nCode=UST\nScryfallCode=UST\n")
         card = printing(1, "1", "Copy // Horror", "en", set_code="tust", layout="double_faced_token",
@@ -371,7 +404,7 @@ Code=SLD
                             {"name": "Horror", "image_uris": {"large": f"{CDN}/back.jpg"}},
                         ])
         assets, _, issues = plan_images("tust", [card], edition, ["en"])
-        self.assertEqual(issues, [])
+        self.assertTrue(any("not independently addressable" in issue for issue in issues))
         self.assertEqual([(a.stem, [s.url for s in a.sources]) for a in assets], [
             ("pics/tokens/TUST/1_Copy", [f"{CDN}/front.jpg"]),
         ])
