@@ -343,6 +343,19 @@ Code=SLD
         self.assertEqual([a.stem for a in assets], ["pics/cards/TDM/Marang River Regent.full"])
         self.assertEqual(issues, [])
 
+    def test_unregistered_same_name_token_back_reuses_front_key(self):
+        edition = Edition.parse("[metadata]\nCode=UST\nScryfallCode=UST\n")
+        card = printing(1, "1", "Angel // Angel", "en", set_code="tust", layout="double_faced_token",
+                        set_type="token", image_uris={}, card_faces=[
+                            {"name": "Angel", "image_uris": {"large": f"{CDN}/front.jpg"}},
+                            {"name": "Angel", "image_uris": {"large": f"{CDN}/back.jpg"}},
+                        ])
+        assets, _, issues = plan_images("tust", [card], edition, ["en"])
+        self.assertEqual(issues, [])
+        self.assertEqual([(a.stem, [s.url for s in a.sources]) for a in assets], [
+            ("pics/tokens/TUST/1_Angel", [f"{CDN}/front.jpg"]),
+        ])
+
     def test_double_faced_token_uses_forge_cache_key_for_back_side(self):
         edition = Edition.parse("""[metadata]
 Code=MOM

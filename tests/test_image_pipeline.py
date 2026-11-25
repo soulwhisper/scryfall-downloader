@@ -83,7 +83,11 @@ class ImagePipelineTest(unittest.TestCase):
         return self.stem.with_name(self.stem.name + suffix)
 
     def fetch(self, cdn, sources, previous=None, *, legacy=False, languages=(), **options):
-        return download(cdn, self.root, Asset(STEM, tuple(sources), legacy, languages), previous, self.stop,
+        return download(cdn, self.root, Asset(STEM, tuple(sources), legacy, languages,
+                                             printing_key='["ft","1","Oak",0]',
+                                             valid_printing_keys=('["ft","1","Oak",0]', '["ft","2","Oak",0]'),
+                                             shared_token=False),
+                        previous, self.stop,
                         options.pop("minimum", None), **options)
 
     def test_source_order_gate_and_confirmed_legacy_key(self):
@@ -226,6 +230,26 @@ class ImagePipelineTest(unittest.TestCase):
         alias.write_bytes(png(30))
         images = local_images(self.root, Asset(STEM, (), True), saved, self.stop, False)
         self.assertEqual([(image.path, image.saved, image.shape) for image in images], [(alias, None, None)])
+
+    def test_shared_forge_key_accepts_only_matching_printing_identity(self):
+        first = source("first", source_id=PRINT_ID)
+        second = source("second", source_id=OTHER_ID)
+        _, previous, _ = self.fetch(CDN(**{"first.png": png(10)}), [first])
+        # The same Forge slot may be populated by either Scryfall printing.
+        shared_asset = Asset(STEM, (first, second), printing_key='["ft","1","Oak",0]',
+                             valid_printing_keys=('["ft","1","Oak",0]', '["ft","2","Oak",0]'), shared_token=True)
+        self.assertEqual(download(CDN(), self.root, shared_asset, previous, self.stop, None)[0], "cached")
+        wrong = replace(previous, source_id="00000000-0000-0000-0000-000000000099")
+        cdn = CDN(**{"first.png": png(10), "second.png": png(20)})
+        outcome, saved, _ = download(cdn, self.root, shared_asset, wrong, self.stop, None)
+        self.assertEqual(outcome, "downloaded")
+        self.assertIn(saved.source_id, {PRINT_ID, OTHER_ID})
+        # Unknown/conflicting language metadata is retained rather than
+        # overwriting a valid local image without an explicit refresh policy.
+        wrong_language = replace(previous, language="ja")
+        outcome, saved, _ = download(CDN(**{"second.png": png(20)}), self.root, shared_asset, wrong_language, self.stop, None)
+        self.assertEqual(outcome, "cached")
+        self.assertEqual(saved.source_id, PRINT_ID)
 
     def test_default_does_not_inspect_lower_priority_variants(self):
         self.file(".jpg").write_bytes(JPEG)
