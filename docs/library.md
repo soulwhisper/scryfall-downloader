@@ -15,9 +15,12 @@ Paths are relative to the data directory (`--data`):
   `MOM/16_phyrexian.png`. Explicit `☇` entries remain available under their
   registered names. If an unregistered double-faced token has the same name on
   both faces, Forge normalizes `$alt` back to the front key; no invented `☇`
-  file is written. When several Scryfall printings share one Token key, any
-  verified source in that printing's valid set may be reused; a source outside
-  the set is replaced.
+  file is written. A differently named unregistered back face is not
+  independently addressable by Forge and is reported instead of being written
+  under an invented filename. When several Scryfall printings share one Token
+  key, any verified source in that printing's valid set may be reused; a source
+  outside the set is replaced. The valid identity set is independent of the
+  current language filter.
 
 Forge edition files supply the short folder code (`Code2`, when defined) and
 art numbering. The downloader resolves editions by `ScryfallCode` and
@@ -38,7 +41,9 @@ use Forge's registered `☇` art slots when present; an unregistered extra face
 is not written to an invented card key. Meld backs use the related Scryfall
 meld result. Specialize uses the Forge card script's primary and five color
 face names, with each color's Scryfall printing as its source. These script
-and relationship lookups are cached under the data directory.
+and relationship lookups are cached under the data directory. If a special
+card's relationship metadata is incomplete, the unresolved face is reported in
+`issues` rather than being silently treated as a complete Forge image.
 
 To fill corrected paths in an existing library, rerun the affected sets.
 Old inferred files are not moved or deleted.
