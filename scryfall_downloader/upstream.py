@@ -182,6 +182,7 @@ class Asset:
     inferred: bool = False
     valid_printing_keys: tuple[str, ...] = ()
     shared_token: bool = False
+    valid_source_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -298,6 +299,8 @@ def _check_art(asset: Asset, saved: SavedImage) -> tuple[SavedImage, bool | None
     if saved.url is None:
         # Manually installed images can use a confirmed Forge key, not a guess.
         return saved, None if asset.inferred else True
+    if asset.shared_token and saved.source_id in asset.valid_source_ids:
+        return replace(saved, printing_key=key), True
 
     # Backfill pre-upgrade receipts from the exact CDN asset, including its
     # face. A shared Forge key may legally have several Scryfall printings;

@@ -19,8 +19,9 @@ Paths are relative to the data directory (`--data`):
   independently addressable by Forge and is reported instead of being written
   under an invented filename. When several Scryfall printings share one Token
   key, any verified source in that printing's valid set may be reused; a source
-  outside the set is replaced. The valid identity set is independent of the
-  current language filter.
+  outside the set is replaced. The valid identity set and source-ID validation
+  are independent of the current language filter, while downloads still honor
+  the requested languages.
 
 Forge edition files supply the short folder code (`Code2`, when defined) and
 art numbering. The downloader resolves editions by `ScryfallCode` and
@@ -43,7 +44,9 @@ meld result. Specialize uses the Forge card script's primary and five color
 face names, with each color's Scryfall printing as its source. These script
 and relationship lookups are cached under the data directory. If a special
 card's relationship metadata is incomplete, the unresolved face is reported in
-`issues` rather than being silently treated as a complete Forge image.
+`issues` rather than being silently treated as a complete Forge image. A
+Specialize group with missing relationship data is not written partially or
+allowed to produce duplicate color-face keys.
 
 To fill corrected paths in an existing library, rerun the affected sets.
 Old inferred files are not moved or deleted.
