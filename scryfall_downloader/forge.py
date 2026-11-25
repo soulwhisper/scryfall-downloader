@@ -15,6 +15,12 @@ from .upstream import Asset, NETWORK_ERRORS, Source, UpstreamError, Web, atomic_
 
 
 EDITIONS_URL = "https://raw.githubusercontent.com/Card-Forge/forge/master/forge-gui/res/editions/"
+# Forge's ImageUtil routes these prefixed collectors to separate Scryfall sets.
+PLANECHASE_EDITIONS = {
+    "ohop": ("hop", "Planechase"),
+    "opc2": ("pc2", "Planechase 2012"),
+    "opca": ("pca", "Planechase Anthology"),
+}
 BAD_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 SHORT_CODE = re.compile(r"[A-Za-z0-9_-]{1,16}\Z")
 CARD_SECTIONS = frozenset("""cards|special slot|precon product|borderless|etched|showcase|full art|extended art|
@@ -123,34 +129,48 @@ class ForgeEditions:
                         self.by_code.setdefault(edition.tokens_code, edition)
 
     def find(self, code: str, card: dict) -> tuple[Edition | None, str | None]:
+        code, set_name = PLANECHASE_EDITIONS.get(code, (code, None))
         if self.local is not None:
             if edition := self.by_code.get(code):
                 return edition, None
             return None, "No matching Forge edition file; filenames inferred from Scryfall."
 
-        set_name = card["set_name"]
-        if card["set_type"] == "token":
-            set_name = set_name.removesuffix(" Tokens")
+        if set_name is None:
+            set_name = card["set_name"]
+            if card["set_type"] == "token":
+                set_name = set_name.removesuffix(" Tokens")
+
+        def matching_edition(raw):
+            edition = Edition.parse(raw.decode("utf-8"))
+            return edition if edition and code in (edition.scryfall, edition.tokens_code) else None
+
         # Forge's resource filenames typically omit punctuation illegal on Windows.
         set_name = BAD_FILENAME_CHARS.sub("", set_name)
         key = hashlib.sha256(set_name.encode()).hexdigest()
         path = self.cache / (key + ".txt")
         try:
-            if fresh(path):
-                raw = path.read_bytes()
-            else:
-                with self.web.open(EDITIONS_URL + quote(set_name, safe="") + ".txt", "raw.githubusercontent.com", "text/plain") as reply:
-                    raw = reply.read(2 * 1024 * 1024 + 1)
+            if fresh(path) and (edition := matching_edition(path.read_bytes())):
+                return edition, None
+            # For example, Forge spells The Brothers' War without the apostrophe.
+            alternate = set_name.replace("'", "").replace("’", "")
+            for title in dict.fromkeys((set_name, alternate)):
+                try:
+                    url = EDITIONS_URL + quote(title, safe="") + ".txt"
+                    with self.web.open(url, "raw.githubusercontent.com", "text/plain") as reply:
+                        raw = reply.read(2 * 1024 * 1024 + 1)
+                except HTTPError as exc:
+                    if exc.code != 404:
+                        raise
+                    exc.close()
+                    continue
                 if len(raw) > 2 * 1024 * 1024:
                     raise UpstreamError("Forge edition file exceeds 2 MiB")
-                atomic_write(path, lambda file: file.write(raw))
-            edition = Edition.parse(raw.decode("utf-8"))
-            if edition and code in (edition.scryfall, edition.tokens_code):
-                return edition, None
+                if edition := matching_edition(raw):
+                    atomic_write(path, lambda file: file.write(raw))
+                    return edition, None
         except HTTPError as exc:
             with exc:
-                if exc.code != 404:
-                    return None, f"Forge edition lookup returned HTTP {exc.code}; filenames inferred."
+                return None, f"Forge edition lookup returned HTTP {exc.code}; filenames inferred."
         except (UpstreamError, *NETWORK_ERRORS) as exc:
             return None, f"Forge edition lookup failed ({exc}); filenames inferred."
         return None, "No matching Forge edition file; filenames inferred from Scryfall."
@@ -220,10 +240,14 @@ def _art_indexes(representatives):
             for name, numbers in arts.items() for i, number in enumerate(numbers, 1)}
 
 
-def _edition_entry(edition, card, first_name):
+def _edition_number(code, number):
+    return code.upper() + number if code in PLANECHASE_EDITIONS else number
+
+
+def _edition_entry(edition, code, card, first_name):
     if not edition:
         return None
-    number = card["collector_number"]
+    number = _edition_number(code, card["collector_number"])
     names = (card["name"], first_name)
     flavor = card.get("flavor_name")
     rows = [row for row in edition.cards.get(number, ())
@@ -254,8 +278,15 @@ def _forge_keys(code, card, edition, entry, indexes):
             if slugs:
                 for slug in dict.fromkeys(slugs):
                     yield side, f"pics/tokens/{edition.code}/{filename(token_number)}_{filename(slug)}", True, False
-            else:
-                stem = f"pics/tokens/{code.upper()}/{filename(token_number)}_{filename(name).replace(' ', '_')}"
+            if side and edition and number in edition.tokens:
+                # PaperToken supplies the back face's name; Forge strips $alt before looking it up.
+                back_name = filename(name.lower().replace(" token", "").replace(" ", "_"))
+                yield side, f"pics/tokens/{edition.code}/{filename(number)}_{back_name}", True, False
+            elif not slugs:
+                token_folder = code.upper()
+                if edition and len(names) > 1 and number + "☇" in edition.tokens:
+                    token_folder = edition.code
+                stem = f"pics/tokens/{token_folder}/{filename(token_number)}_{filename(name).replace(' ', '_')}"
                 yield side, stem, False, False
         else:
             if side == 0 and layout != "split":
@@ -291,7 +322,7 @@ def _printing_key(code, number, name, side, edition, entry):
     # An index such as Swamp2 is a destination, not a printing identity.
     qualifier = ()
     if entry is not None:
-        rows = edition.cards.get(number) or edition.cards.get("F" + number, ())
+        rows = edition.cards.get(_edition_number(code, number)) or edition.cards.get("F" + number, ())
         if sum(row.name == entry.name for row in rows) > 1:
             qualifier = (entry.artist, entry.variant, entry.flavor_name)
     return json.dumps((code, number, name, side, *qualifier), ensure_ascii=False, separators=(",", ":"))
@@ -322,9 +353,11 @@ def plan_images(
         candidates = defaultdict(list)
         for card in prints[slot]:
             first_name = face_names(card)[0]
-            entry = _edition_entry(edition, card, first_name)
+            entry = _edition_entry(edition, code, card, first_name)
             token = card["set_type"] == "token" or card["layout"] in TOKEN_LAYOUTS
-            if entry is None and not token and (name in known_names or first_name in known_names):
+            if entry is None and not token and (
+                name in known_names or first_name in known_names or (edition and code in PLANECHASE_EDITIONS)
+            ):
                 # The edition defines the card's art count. Guessing a suffix for
                 # another collector number can assign it to a different Forge art.
                 continue

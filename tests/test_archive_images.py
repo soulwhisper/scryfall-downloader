@@ -1,7 +1,12 @@
+from io import BytesIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
+from urllib.error import HTTPError
+from urllib.parse import quote
 from uuid import UUID
 
-from scryfall_downloader.forge import Edition, plan_images
+from scryfall_downloader.forge import EDITIONS_URL, Edition, ForgeEditions, plan_images
 
 
 CDN = "https://cards.scryfall.io"
@@ -19,6 +24,16 @@ def printing(key, number, name, lang, *, set_code="war", **fields):
 
 def source_ids(asset):
     return [source.source_id for source in asset.sources]
+
+
+class EditionFiles:
+    def __init__(self, files):
+        self.files = files
+
+    def open(self, url, _host, _accept):
+        if (body := self.files.get(url.removeprefix(EDITIONS_URL))) is None:
+            raise HTTPError(url, 404, "Not Found", {}, BytesIO())
+        return BytesIO(body.encode("utf-8"))
 
 
 class ArchiveImagesTest(unittest.TestCase):
@@ -190,4 +205,73 @@ Code2=XX
         } | {
             f"pics/tokens/ONE/{n}_c_1_1_a_phyrexian_mite_toxic_noblock": [cards[i]["id"]]
             for i, n in enumerate((11, 12), 1)
+        })
+
+    def test_remote_edition_resolves_punctuation_difference_and_keeps_forge_art_index(self):
+        raw = """[metadata]
+Code=BRO
+[cards]
+34 R Autonomous Assembler @Slawomir Maniak
+309 R Autonomous Assembler @Slawomir Maniak
+"""
+        card = printing(1, "309", "Autonomous Assembler", "en", set_code="bro",
+                        set_name="The Brothers' War", layout="prototype")
+        with TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            web = EditionFiles({"The%20Brothers%20War.txt": raw})
+            edition, warning = ForgeEditions(web, cache, None).find("bro", card)
+            self.assertIsNone(warning)
+            assets, _, issues = plan_images("bro", [card], edition, ["en"])
+            self.assertEqual(issues, [])
+            self.assertEqual([a.stem for a in assets], ["pics/cards/BRO/Autonomous Assembler2.full"])
+            cached, warning = ForgeEditions(EditionFiles({}), cache, None).find("bro", card)
+            self.assertIsNone(warning)
+            self.assertEqual(cached, edition)
+
+    def test_planechase_companions_use_prefixed_collectors_in_parent_edition(self):
+        cases = (
+            ("ohop", "HOP", "PCH", "Planechase", "1", "Academy at Tolaria West"),
+            ("opc2", "PC2", "PC2", "Planechase 2012", "1", "Chaotic Aether"),
+            ("opca", "PCA", "PCA", "Planechase Anthology", "54", "Naar Isle"),
+        )
+        for ident, (code, parent, folder, title, number, name) in enumerate(cases, 1):
+            for mounted in (False, True):
+                with self.subTest(code=code, mounted=mounted), TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    raw = f"[metadata]\nCode={parent}\nCode2={folder}\n[cards]\n{code.upper()}{number} C {name}\n"
+                    if mounted:
+                        (root / f"{title}.txt").write_text(raw, encoding="utf-8")
+                    web = EditionFiles({} if mounted else {f"{quote(title, safe='')}.txt": raw})
+                    forge = ForgeEditions(web, root / "cache", root if mounted else None)
+                    card = printing(ident, number, name, "en", set_code=code, layout="planar",
+                                    set_name=f"{title} Planes")
+                    edition, warning = forge.find(code, card)
+                    self.assertIsNone(warning)
+                    unknown = printing(ident + 10, "556", "Unlisted Plane", "en", set_code=code, layout="planar")
+                    assets, _, issues = plan_images(code, [card, unknown], edition, ["en"])
+                    self.assertEqual([(a.stem, a.inferred) for a in assets], [(f"pics/cards/{folder}/{name}", False)])
+                    self.assertEqual(issues, ["556 Unlisted Plane: no unique art slot in the Forge edition"])
+
+    def test_double_faced_token_uses_forge_cache_key_for_back_side(self):
+        edition = Edition.parse("""[metadata]
+Code=MOM
+Code2=MO
+[tokens]
+16 incubator_c_0_0_a_phyrexian
+17 incubator_c_0_0_a_phyrexian
+17☇ c_0_0_a_phyrexian
+""")
+        cards = [printing(n, str(n), "Incubator // Phyrexian", "en", set_code="tmom",
+                          layout="double_faced_token", set_type="token", image_uris={},
+                          card_faces=[{"name": name, "image_uris": {"png": f"{CDN}/png/{side}/{n}.png"}}
+                                      for name, side in (("Incubator", "front"), ("Phyrexian", "back"))])
+                 for n in (16, 17)]
+        assets, _, issues = plan_images("tmom", cards, edition, ["en"])
+        self.assertEqual(issues, [])
+        self.assertEqual({a.stem: a.sources[0].url for a in assets}, {
+            "pics/tokens/MOM/16_incubator_c_0_0_a_phyrexian": f"{CDN}/png/front/16.png",
+            "pics/tokens/MOM/16_phyrexian": f"{CDN}/png/back/16.png",
+            "pics/tokens/MOM/17_incubator_c_0_0_a_phyrexian": f"{CDN}/png/front/17.png",
+            "pics/tokens/MOM/17_phyrexian": f"{CDN}/png/back/17.png",
+            "pics/tokens/MOM/17☇_c_0_0_a_phyrexian": f"{CDN}/png/back/17.png",
         })
