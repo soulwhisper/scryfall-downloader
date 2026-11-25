@@ -6,7 +6,7 @@ from urllib.error import HTTPError
 from urllib.parse import quote
 from uuid import UUID
 
-from scryfall_downloader.forge import EDITIONS_URL, Edition, ForgeEditions, plan_images
+from scryfall_downloader.forge import EDITIONS_URL, Edition, FaceRule, ForgeEditions, plan_images
 
 
 CDN = "https://cards.scryfall.io"
@@ -37,6 +37,60 @@ class EditionFiles:
 
 
 class ArchiveImagesTest(unittest.TestCase):
+    def test_forge_special_scripts_drive_meld_and_specialize_faces(self):
+        meld = printing(1, "15", "Bruna, the Fading Light", "en", set_code="emn", layout="meld",
+                        all_parts=[{"id": "2", "component": "meld_result", "name": "Brisela, Voice of Nightmares"}])
+        specialize = printing(3, "18", "Skanos, Dragon Vassal", "en", set_code="hbg",
+                              all_parts=[{"id": "4", "component": "combo_piece", "name": "Skanos, White Dragon Vassal"}])
+        scripts = {
+            "bruna_the_fading_light.txt": """Name:Bruna, the Fading Light
+AlternateMode:Meld
+ALTERNATE
+Name:Brisela, Voice of Nightmares
+""",
+            "skanos_dragon_vassal.txt": """Name:Skanos, Dragon Vassal
+AlternateMode:Specialize
+SPECIALIZE:WHITE
+Name:Skanos, White Dragon Vassal
+SPECIALIZE:BLUE
+Name:Skanos, Blue Dragon Vassal
+SPECIALIZE:BLACK
+Name:Skanos, Black Dragon Vassal
+SPECIALIZE:RED
+Name:Skanos, Red Dragon Vassal
+SPECIALIZE:GREEN
+Name:Skanos, Green Dragon Vassal
+""",
+        }
+        with TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            for name, body in scripts.items():
+                path = cache / "scripts" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(body, encoding="utf-8")
+            forge = ForgeEditions(None, cache, None)
+            self.assertEqual(forge.face_rule(meld).kind, "meld")
+            self.assertEqual(forge.face_rule(meld).names[-1], "Brisela, Voice of Nightmares")
+            rule = forge.face_rule(specialize)
+            self.assertEqual(rule, FaceRule(("Skanos, Dragon Vassal", "Skanos, White Dragon Vassal",
+                                             "Skanos, Blue Dragon Vassal", "Skanos, Black Dragon Vassal",
+                                             "Skanos, Red Dragon Vassal", "Skanos, Green Dragon Vassal"), "specialize"))
+
+    def test_meld_back_uses_related_result_printing(self):
+        result = printing(2, "15b", "Brisela, Voice of Nightmares", "en", set_code="emn", layout="meld")
+        base = printing(1, "15", "Bruna, the Fading Light", "en", set_code="emn", layout="meld",
+                        all_parts=[{"id": result["id"], "component": "meld_result", "name": result["name"]}])
+        edition = Edition.parse("[metadata]\nCode=EMN\n[cards]\n15 R Bruna, the Fading Light\n15b R Brisela, Voice of Nightmares\n")
+        class Rules:
+            def face_rule(self, card):
+                return FaceRule(("Bruna, the Fading Light", "Brisela, Voice of Nightmares"), "meld")
+        assets, _, issues = plan_images("emn", [base, result], edition, ["en"], forge=Rules())
+        self.assertEqual(issues, [])
+        self.assertEqual([(a.stem, source_ids(a)) for a in assets], [
+            ("pics/cards/EMN/Bruna, the Fading Light.full", [base["id"]]),
+            ("pics/cards/EMN/Brisela, Voice of Nightmares.full", [result["id"]]),
+        ])
+
     def test_japanese_planeswalker_occupies_its_own_forge_art(self):
         name = "Liliana, Dreadhorde General"
         edition = Edition.parse(f"""[metadata]
@@ -252,6 +306,43 @@ Code=BRO
                     self.assertEqual([(a.stem, a.inferred) for a in assets], [(f"pics/cards/{folder}/{name}", False)])
                     self.assertEqual(issues, ["556 Unlisted Plane: no unique art slot in the Forge edition"])
 
+    def test_reversible_same_name_faces_use_registered_reverse_slots(self):
+        edition = Edition.parse("""[metadata]
+Code=SLD
+[cards]
+380 R Okaun, Eye of Chaos @A
+380☇ R Okaun, Eye of Chaos @A
+380★ R Okaun, Eye of Chaos @A
+380★☇ R Okaun, Eye of Chaos @A
+""")
+        name = "Okaun, Eye of Chaos // Okaun, Eye of Chaos"
+        cards = []
+        for i, number in enumerate(("380", "380★"), 1):
+            cards.append(printing(i, number, name, "en", set_code="sld", layout="reversible_card",
+                                  image_uris={}, card_faces=[
+                                      {"name": "Okaun, Eye of Chaos", "image_uris": {"large": f"{CDN}/front/{i}.jpg"}},
+                                      {"name": "Okaun, Eye of Chaos", "image_uris": {"large": f"{CDN}/back/{i}.jpg"}},
+                                  ]))
+        assets, _, issues = plan_images("sld", cards, edition, ["en"])
+        self.assertEqual(issues, [])
+        self.assertEqual({asset.stem: [s.url for s in asset.sources] for asset in assets}, {
+            "pics/cards/SLD/Okaun, Eye of Chaos1.full": [f"{CDN}/front/1.jpg"],
+            "pics/cards/SLD/Okaun, Eye of Chaos2.full": [f"{CDN}/front/2.jpg"],
+            "pics/cards/SLD/Okaun, Eye of Chaos3.full": [f"{CDN}/back/2.jpg"],
+            "pics/cards/SLD/Okaun, Eye of Chaos4.full": [f"{CDN}/back/1.jpg"],
+        })
+
+    def test_unregistered_reversible_extra_face_is_not_silently_written(self):
+        edition = Edition.parse("[metadata]\nCode=TDM\n[cards]\n378 R Marang River Regent\n")
+        card = printing(1, "378", "Marang River Regent // Coil and Catch // Marang River Regent", "en",
+                        set_code="tdm", layout="reversible_card", image_uris={},
+                        card_faces=[{"name": "Marang River Regent", "image_uris": {"large": f"{CDN}/front.jpg"}},
+                                    {"name": "Coil and Catch", "image_uris": {"large": f"{CDN}/back.jpg"}},
+                                    {"name": "Marang River Regent", "image_uris": {"large": f"{CDN}/front2.jpg"}}])
+        assets, _, issues = plan_images("tdm", [card], edition, ["en"])
+        self.assertEqual([a.stem for a in assets], ["pics/cards/TDM/Marang River Regent.full"])
+        self.assertEqual(issues, [])
+
     def test_double_faced_token_uses_forge_cache_key_for_back_side(self):
         edition = Edition.parse("""[metadata]
 Code=MOM
@@ -268,10 +359,10 @@ Code2=MO
                  for n in (16, 17)]
         assets, _, issues = plan_images("tmom", cards, edition, ["en"])
         self.assertEqual(issues, [])
+        self.assertTrue(all(asset.printing_key for asset in assets))
         self.assertEqual({a.stem: a.sources[0].url for a in assets}, {
             "pics/tokens/MOM/16_incubator_c_0_0_a_phyrexian": f"{CDN}/png/front/16.png",
             "pics/tokens/MOM/16_phyrexian": f"{CDN}/png/back/16.png",
             "pics/tokens/MOM/17_incubator_c_0_0_a_phyrexian": f"{CDN}/png/front/17.png",
-            "pics/tokens/MOM/17_phyrexian": f"{CDN}/png/back/17.png",
             "pics/tokens/MOM/17☇_c_0_0_a_phyrexian": f"{CDN}/png/back/17.png",
         })

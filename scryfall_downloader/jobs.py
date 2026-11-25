@@ -460,7 +460,7 @@ class Jobs:
             check_interrupted(self.interrupt)
             edition, warning = self.forge.find(code, cards[0])
             assets, printings, plan_issues = plan_images(code, cards, edition, languages, self.webp,
-                                                       all_languages=bulk is not None)
+                                                       all_languages=bulk is not None, forge=self.forge)
         with self.ready, self.db:
             check_interrupted(self.interrupt)
             if warning:

@@ -618,6 +618,27 @@ class DownloaderTest(unittest.TestCase):
                              {manual["id"], automatic["id"]})
         self.assertCountEqual(upstream.image_requests, ["oak.png", "token.png"])
 
+    def test_token_printing_identity_survives_restart_and_repairs_wrong_art(self):
+        token = printing(1, "en", "Mite", "old.png")
+        token.update(set_type="token", layout="token", id=str(UUID(int=91)))
+        other = dict(token, id=str(UUID(int=92)), collector_number="2")
+        scans = {"old.png": pixel_png(15), "new.png": pixel_png(80)}
+        upstream = Upstream([dict(token, image_uris={"png": IMAGE_ORIGIN + "old.png"}),
+                             dict(other, image_uris={"png": IMAGE_ORIGIN + "new.png"})], scans)
+        with self.server(upstream, "") as port:
+            job = self.api(port, "POST", "/jobs", {"sets": ["tst"]}, expect=202)
+            self.wait_for(port, f"/jobs/{job['id']}", "completed")
+        with closing(sqlite3.connect(self.root / "images.sqlite3")) as db:
+            row = db.execute("SELECT source_id, printing_key FROM images WHERE stem LIKE 'pics/tokens/%'").fetchone()
+            self.assertIsNotNone(row[1])
+            self.assertEqual(row[0], token["id"])
+            db.execute("UPDATE images SET source_id = ?, printing_key = ? WHERE stem LIKE 'pics/tokens/%'",
+                       (other["id"], '["tst","2","Mite",0]'))
+        with self.server(upstream, "") as port:
+            job = self.api(port, "POST", "/jobs", {"sets": ["tst"]}, expect=202)
+            self.wait_for(port, f"/jobs/{job['id']}", "completed")
+        self.assertTrue((self.root / "pics/tokens/TST/1_Mite.png").exists())
+
     def test_retry_submits_only_unfinished_sets(self):
         cards = [printing(1, "en", "Oak", "oak.png"), dict(printing(1, "en", "Pine", "pine.png"), set="other")]
         upstream = Upstream(cards, {"oak.png": pixel_png(5)})

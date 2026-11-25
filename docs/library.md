@@ -16,8 +16,11 @@ Paths are relative to the data directory (`--data`):
   registered names.
 
 Forge edition files supply the short folder code (`Code2`, when defined) and
-art numbering. The downloader looks for editions on GitHub unless you pass
-`--forge-editions /path/to/Forge/res/editions` to use your Forge release. In a
+art numbering. The downloader resolves editions by `ScryfallCode` and
+`TokensCode` first, then falls back to the edition filename. Remote metadata
+comes from the cached Forge repository index, so names such as Mercadian
+Masques and The Brothers' War do not need exact filename matches. The local
+`--forge-editions` directory remains authoritative when supplied. In a
 container, mount that directory read-only (for example with
 `-v /path/to/Forge/res/editions:/editions:ro`), then append
 `--forge-editions /editions` after the image name. When there is no matching
@@ -26,9 +29,12 @@ and numbering. Check the job warning if Forge's image keys do not match.
 
 Request Planechase planes by their Scryfall codes (`ohop`, `opc2`, `opca`).
 Forge registers those printings in its parent editions, so their images go
-to `cards/PCH`, `cards/PC2`, and `cards/PCA`, respectively. Remote edition
-lookup also handles titles whose Forge filename omits apostrophes, such as
-The Brothers' War, and verifies the edition code before using it.
+to `cards/PCH`, `cards/PC2`, and `cards/PCA`, respectively. Reversible cards
+use Forge's registered `☇` art slots when present; an unregistered extra face
+is not written to an invented card key. Meld backs use the related Scryfall
+meld result. Specialize uses the Forge card script's primary and five color
+face names, with each color's Scryfall printing as its source. These script
+and relationship lookups are cached under the data directory.
 
 To fill corrected paths in an existing library, rerun the affected sets.
 Old inferred files are not moved or deleted.
