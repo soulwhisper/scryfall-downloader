@@ -491,9 +491,10 @@ def _forge_keys(code, card, edition, entry, indexes, forge=None):
                 back_name = filename(name.lower().replace(" token", "").replace(" ", "_"))
                 yield side, f"pics/tokens/{edition.code}/{filename(number)}_{back_name}", True, False
             elif not slugs:
-                # A parent edition can be resolved for a token set without
-                # registering this token. In that case Forge's key falls back
-                # to the Scryfall token code, not the parent's card code.
+                # With no registered reverse, Forge strips $alt and reuses the
+                # normalized front key. Do not invent a ☇ filename.
+                if side and names[0] == name:
+                    continue
                 token_folder = code.upper()
                 if edition and number in edition.tokens:
                     token_folder = edition.code
@@ -605,6 +606,8 @@ def plan_images(
                 else:
                     source_card, source_side = _special_source(card, side, cards, forge)
                 key = side, stem, found, legacy, entry if stem.startswith("pics/cards/") else None
+                if stem.startswith("pics/tokens/"):
+                    key = side, stem, found, legacy, None
                 sources = candidates[key]
                 lang = card["lang"]
                 if all_languages or lang in language_rank:
@@ -623,7 +626,13 @@ def plan_images(
                 + list(language_rank) + [card["lang"] for card, _ in variants]
             ))
             printing_key = _printing_key(code, number, name, side, edition, entry)
-            asset = Asset(stem, sources, legacy, preferred, printing_key=printing_key, inferred=not found)
+            valid_keys = tuple(dict.fromkeys(
+                _printing_key(code, source_card["collector_number"], source_card["name"], side, edition, entry)
+                for source_card, _ in variants
+            ))
+            shared = stem.startswith("pics/tokens/") and len({source.source_id for source in sources if source.source_id}) > 1
+            asset = Asset(stem, sources, legacy, preferred, printing_key=printing_key,
+                          valid_printing_keys=valid_keys, inferred=not found, shared_token=shared)
             desired.append((not found, not sources, number, name, asset))
 
     assets = []

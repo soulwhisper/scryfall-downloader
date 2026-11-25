@@ -13,7 +13,11 @@ Paths are relative to the data directory (`--data`):
   A double-faced token with a registered front also saves its back under
   Forge's collector-number and back-name key in that folder, for example
   `MOM/16_phyrexian.png`. Explicit `☇` entries remain available under their
-  registered names.
+  registered names. If an unregistered double-faced token has the same name on
+  both faces, Forge normalizes `$alt` back to the front key; no invented `☇`
+  file is written. When several Scryfall printings share one Token key, any
+  verified source in that printing's valid set may be reused; a source outside
+  the set is replaced.
 
 Forge edition files supply the short folder code (`Code2`, when defined) and
 art numbering. The downloader resolves editions by `ScryfallCode` and

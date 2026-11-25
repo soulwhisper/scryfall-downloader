@@ -180,6 +180,8 @@ class Asset:
     languages: tuple[str, ...] = ()
     printing_key: str | None = None
     inferred: bool = False
+    valid_printing_keys: tuple[str, ...] = ()
+    shared_token: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,17 +290,24 @@ def _image_stem(root: Path, asset: Asset) -> Path:
 
 def _check_art(asset: Asset, saved: SavedImage) -> tuple[SavedImage, bool | None]:
     key = asset.printing_key
-    if key is None or saved.printing_key == key:
+    if key is None:
+        return saved, True
+    valid_keys = asset.valid_printing_keys or ((key,) if key else ())
+    if saved.printing_key in valid_keys and (not asset.shared_token or saved.source_id is None):
         return saved, True
     if saved.url is None:
         # Manually installed images can use a confirmed Forge key, not a guess.
         return saved, None if asset.inferred else True
 
     # Backfill pre-upgrade receipts from the exact CDN asset, including its
-    # face. Ignore cache-busting query strings, not the format or path.
+    # face. A shared Forge key may legally have several Scryfall printings;
+    # source_id identifies the actual printing independently of that key.
     old_url = saved.url.partition("?")[0]
     same_language = same_print = False
     for source in asset.sources:
+        if saved.source_id is not None and saved.source_id == source.source_id:
+            if saved.language in (None, source.language):
+                return replace(saved, printing_key=key), True
         if (saved.source_id is None or saved.source_id == source.source_id) and source.url.partition("?")[0] == old_url:
             return replace(saved, printing_key=key), True
         if source.source_id is not None:
