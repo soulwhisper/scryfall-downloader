@@ -456,6 +456,20 @@ def _specialize_issue(rule, cards):
     return f"{'/'.join(numbers)} {base}: Specialize relationship metadata is incomplete; color faces are not independently resolved"
 
 
+def forge_token_filename(name: str) -> str:
+    """Match PaperToken.makeTokenFileName for unregistered Token faces."""
+    normalized = unicodedata.normalize("NFD", name)
+    chars = []
+    for char in normalized:
+        if unicodedata.category(char) == "Mn":
+            continue
+        if char in " -_":
+            chars.append("_")
+        elif char.isalnum():
+            chars.append(char)
+    return "".join(chars).lower() or "Unnamed"
+
+
 def _forge_keys(code, card, edition, entry, indexes, forge=None):
     number = card["collector_number"]
     names = face_names(card)
@@ -507,7 +521,7 @@ def _forge_keys(code, card, edition, entry, indexes, forge=None):
                 token_folder = code.upper()
                 if edition and number in edition.tokens:
                     token_folder = edition.code
-                stem = f"pics/tokens/{token_folder}/{filename(token_number)}_{filename(name).replace(' ', '_')}"
+                stem = f"pics/tokens/{token_folder}/{filename(token_number)}_{forge_token_filename(name)}"
                 yield side, stem, False, False
         else:
             special = _special_face_name(card, side, forge)
