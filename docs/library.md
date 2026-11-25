@@ -10,6 +10,10 @@ Paths are relative to the data directory (`--data`):
 - `pics/tokens/<SET_CODE>/` holds tokens. When Forge defines the token, the
   folder uses its edition `Code` (not `Code2`) and the file uses its token
   name. Otherwise, the folder uses the uppercase Scryfall code.
+  A double-faced token with a registered front also saves its back under
+  Forge's collector-number and back-name key in that folder, for example
+  `MOM/16_phyrexian.png`. Explicit `☇` entries remain available under their
+  registered names.
 
 Forge edition files supply the short folder code (`Code2`, when defined) and
 art numbering. The downloader looks for editions on GitHub unless you pass
@@ -19,6 +23,15 @@ container, mount that directory read-only (for example with
 `--forge-editions /editions` after the image name. When there is no matching
 edition, the downloader uses the uppercase Scryfall code and infers names
 and numbering. Check the job warning if Forge's image keys do not match.
+
+Request Planechase planes by their Scryfall codes (`ohop`, `opc2`, `opca`).
+Forge registers those printings in its parent editions, so their images go
+to `cards/PCH`, `cards/PC2`, and `cards/PCA`, respectively. Remote edition
+lookup also handles titles whose Forge filename omits apostrophes, such as
+The Brothers' War, and verifies the edition code before using it.
+
+To fill corrected paths in an existing library, rerun the affected sets.
+Old inferred files are not moved or deleted.
 
 ## Configure Forge
 
