@@ -492,8 +492,9 @@ def _forge_keys(code, card, edition, entry, indexes, forge=None):
                 yield side, f"pics/tokens/{edition.code}/{filename(number)}_{back_name}", True, False
             elif not slugs:
                 # With no registered reverse, Forge strips $alt and reuses the
-                # normalized front key. Do not invent a ☇ filename.
-                if side and names[0] == name:
+                # normalized front key. A differently named face has no
+                # independently addressable image in Forge's cache.
+                if side:
                     continue
                 token_folder = code.upper()
                 if edition and number in edition.tokens:
@@ -571,6 +572,7 @@ def plan_images(
         number, name = slot
         representative = representatives[slot]
         candidates = defaultdict(list)
+        identity_candidates = defaultdict(list)
         merged_special = False
         for card in prints[slot]:
             first_name = face_names(card)[0]
@@ -585,6 +587,9 @@ def plan_images(
                 if rule.kind == "meld" and card.get("collector_number", "").endswith("b"):
                     merged_special = True
                     continue
+            if card.get("layout") in ("meld", "reversible_card") and not card.get("all_parts") and not card.get("card_faces"):
+                issues.append(f"{number} {name}: special face metadata is incomplete; no independent back-face key")
+                continue
             if entry is None and not token and (
                 name in known_names or first_name in known_names or (edition and code in PLANECHASE_EDITIONS)
             ):
@@ -609,10 +614,12 @@ def plan_images(
                 if stem.startswith("pics/tokens/"):
                     key = side, stem, found, legacy, None
                 sources = candidates[key]
+                identity_candidates[key].append(source_card)
                 lang = card["lang"]
                 if all_languages or lang in language_rank:
                     sources.append((source_card, _printing_sources(source_card, source_side, webp)))
-        if not candidates and not (forge is not None and any(
+        if not candidates and not any(issue.startswith(f"{number} {name}: special face metadata")
+                                      for issue in issues) and not (forge is not None and any(
                 (rule := forge.face_rule(card)) is not None
                 and ((rule.kind == "specialize" and card.get("name") != rule.names[0])
                      or (rule.kind == "meld" and card.get("layout") == "meld"
@@ -620,6 +627,7 @@ def plan_images(
                 for card in prints[slot])):
             issues.append(f"{number} {name}: no unique art slot in the Forge edition")
         for (side, stem, found, legacy, entry), variants in candidates.items():
+            identity_variants = identity_candidates[(side, stem, found, legacy, entry if stem.startswith("pics/cards/") else None)]
             sources = _unique_sources(group for _, group in variants)
             preferred = tuple(dict.fromkeys(
                 [card["lang"] for card, _ in variants if _treatment_priority(card) < 3]
@@ -628,9 +636,9 @@ def plan_images(
             printing_key = _printing_key(code, number, name, side, edition, entry)
             valid_keys = tuple(dict.fromkeys(
                 _printing_key(code, source_card["collector_number"], source_card["name"], side, edition, entry)
-                for source_card, _ in variants
+                for source_card in identity_variants
             ))
-            shared = stem.startswith("pics/tokens/") and len({source.source_id for source in sources if source.source_id}) > 1
+            shared = stem.startswith("pics/tokens/") and len({card.get("id") for card in identity_variants if card.get("id")}) > 1
             asset = Asset(stem, sources, legacy, preferred, printing_key=printing_key,
                           valid_printing_keys=valid_keys, inferred=not found, shared_token=shared)
             desired.append((not found, not sources, number, name, asset))

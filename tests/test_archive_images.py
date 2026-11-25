@@ -343,6 +343,13 @@ Code=SLD
         self.assertEqual([a.stem for a in assets], ["pics/cards/TDM/Marang River Regent.full"])
         self.assertEqual(issues, [])
 
+    def test_incomplete_special_face_metadata_is_reported(self):
+        edition = Edition.parse("[metadata]\nCode=EMN\n[cards]\n15 R Bruna, the Fading Light\n")
+        card = printing(1, "15", "Bruna, the Fading Light", "en", set_code="emn", layout="meld")
+        assets, _, issues = plan_images("emn", [card], edition, ["en"])
+        self.assertEqual(assets, [])
+        self.assertEqual(issues, ["15 Bruna, the Fading Light: special face metadata is incomplete; no independent back-face key"])
+
     def test_unregistered_same_name_token_back_reuses_front_key(self):
         edition = Edition.parse("[metadata]\nCode=UST\nScryfallCode=UST\n")
         card = printing(1, "1", "Angel // Angel", "en", set_code="tust", layout="double_faced_token",
@@ -355,6 +362,29 @@ Code=SLD
         self.assertEqual([(a.stem, [s.url for s in a.sources]) for a in assets], [
             ("pics/tokens/TUST/1_Angel", [f"{CDN}/front.jpg"]),
         ])
+
+    def test_unregistered_different_name_token_back_is_not_addressable(self):
+        edition = Edition.parse("[metadata]\nCode=UST\nScryfallCode=UST\n")
+        card = printing(1, "1", "Copy // Horror", "en", set_code="tust", layout="double_faced_token",
+                        set_type="token", image_uris={}, card_faces=[
+                            {"name": "Copy", "image_uris": {"large": f"{CDN}/front.jpg"}},
+                            {"name": "Horror", "image_uris": {"large": f"{CDN}/back.jpg"}},
+                        ])
+        assets, _, issues = plan_images("tust", [card], edition, ["en"])
+        self.assertEqual(issues, [])
+        self.assertEqual([(a.stem, [s.url for s in a.sources]) for a in assets], [
+            ("pics/tokens/TUST/1_Copy", [f"{CDN}/front.jpg"]),
+        ])
+
+    def test_shared_token_identity_does_not_change_with_language_filter(self):
+        edition = Edition.parse("[metadata]\nCode=ONE\n[tokens]\n11 c_1_1_a_phyrexian_mite\n")
+        cards = [printing(n, "11", "Phyrexian Mite", lang, set_code="tone", layout="token", set_type="token")
+                 for n, lang in ((1, "en"), (2, "zhs"))]
+        english, _, _ = plan_images("tone", cards, edition, ["en"])
+        both, _, _ = plan_images("tone", cards, edition, ["en", "zhs"])
+        self.assertTrue(english[0].shared_token)
+        self.assertTrue(both[0].shared_token)
+        self.assertEqual(english[0].valid_printing_keys, both[0].valid_printing_keys)
 
     def test_double_faced_token_uses_forge_cache_key_for_back_side(self):
         edition = Edition.parse("""[metadata]
