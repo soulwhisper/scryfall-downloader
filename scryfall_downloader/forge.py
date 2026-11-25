@@ -258,7 +258,7 @@ class ForgeEditions:
             if related_name in self.rule_by_face:
                 return self.rule_by_face[related_name]
         if card.get("layout") != "meld" and not any(
-                part.get("component") in ("meld_part", "meld_result")
+                part.get("component") in ("meld_part", "meld_result", "combo_piece")
                 or "Specialize" in part.get("type_line", "")
                 for part in card.get("all_parts") or []):
             return None
@@ -491,6 +491,9 @@ def _forge_keys(code, card, edition, entry, indexes, forge=None):
                 back_name = filename(name.lower().replace(" token", "").replace(" ", "_"))
                 yield side, f"pics/tokens/{edition.code}/{filename(number)}_{back_name}", True, False
             elif not slugs:
+                # A parent edition can be resolved for a token set without
+                # registering this token. In that case Forge's key falls back
+                # to the Scryfall token code, not the parent's card code.
                 token_folder = code.upper()
                 if edition and number in edition.tokens:
                     token_folder = edition.code
@@ -567,16 +570,19 @@ def plan_images(
         number, name = slot
         representative = representatives[slot]
         candidates = defaultdict(list)
+        merged_special = False
         for card in prints[slot]:
             first_name = face_names(card)[0]
             entry = _edition_entry(edition, code, card, first_name)
             token = card["set_type"] == "token" or card["layout"] in TOKEN_LAYOUTS
             if forge is not None and (rule := forge.face_rule(card)) is not None:
                 if rule.kind == "specialize" and card["name"] != rule.names[0]:
-                    # This Scryfall printing is the source for one of the
-                    # base Forge script's color faces, not a separate output.
+                    merged_special = True
                     continue
                 if rule.kind == "meld" and card["layout"] != "meld":
+                    continue
+                if rule.kind == "meld" and card.get("collector_number", "").endswith("b"):
+                    merged_special = True
                     continue
             if entry is None and not token and (
                 name in known_names or first_name in known_names or (edition and code in PLANECHASE_EDITIONS)
@@ -604,8 +610,11 @@ def plan_images(
                 if all_languages or lang in language_rank:
                     sources.append((source_card, _printing_sources(source_card, source_side, webp)))
         if not candidates and not (forge is not None and any(
-                (rule := forge.face_rule(card)) is not None and rule.kind == "specialize"
-                and card.get("name") != rule.names[0] for card in prints[slot])):
+                (rule := forge.face_rule(card)) is not None
+                and ((rule.kind == "specialize" and card.get("name") != rule.names[0])
+                     or (rule.kind == "meld" and card.get("layout") == "meld"
+                         and card.get("collector_number", "").endswith("b")))
+                for card in prints[slot])):
             issues.append(f"{number} {name}: no unique art slot in the Forge edition")
         for (side, stem, found, legacy, entry), variants in candidates.items():
             sources = _unique_sources(group for _, group in variants)

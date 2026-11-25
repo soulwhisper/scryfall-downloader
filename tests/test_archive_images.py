@@ -6,7 +6,7 @@ from urllib.error import HTTPError
 from urllib.parse import quote
 from uuid import UUID
 
-from scryfall_downloader.forge import EDITIONS_URL, Edition, ForgeEditions, plan_images
+from scryfall_downloader.forge import EDITIONS_URL, Edition, FaceRule, ForgeEditions, plan_images
 
 
 CDN = "https://cards.scryfall.io"
@@ -37,6 +37,60 @@ class EditionFiles:
 
 
 class ArchiveImagesTest(unittest.TestCase):
+    def test_forge_special_scripts_drive_meld_and_specialize_faces(self):
+        meld = printing(1, "15", "Bruna, the Fading Light", "en", set_code="emn", layout="meld",
+                        all_parts=[{"id": "2", "component": "meld_result", "name": "Brisela, Voice of Nightmares"}])
+        specialize = printing(3, "18", "Skanos, Dragon Vassal", "en", set_code="hbg",
+                              all_parts=[{"id": "4", "component": "combo_piece", "name": "Skanos, White Dragon Vassal"}])
+        scripts = {
+            "bruna_the_fading_light.txt": """Name:Bruna, the Fading Light
+AlternateMode:Meld
+ALTERNATE
+Name:Brisela, Voice of Nightmares
+""",
+            "skanos_dragon_vassal.txt": """Name:Skanos, Dragon Vassal
+AlternateMode:Specialize
+SPECIALIZE:WHITE
+Name:Skanos, White Dragon Vassal
+SPECIALIZE:BLUE
+Name:Skanos, Blue Dragon Vassal
+SPECIALIZE:BLACK
+Name:Skanos, Black Dragon Vassal
+SPECIALIZE:RED
+Name:Skanos, Red Dragon Vassal
+SPECIALIZE:GREEN
+Name:Skanos, Green Dragon Vassal
+""",
+        }
+        with TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            for name, body in scripts.items():
+                path = cache / "scripts" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(body, encoding="utf-8")
+            forge = ForgeEditions(None, cache, None)
+            self.assertEqual(forge.face_rule(meld).kind, "meld")
+            self.assertEqual(forge.face_rule(meld).names[-1], "Brisela, Voice of Nightmares")
+            rule = forge.face_rule(specialize)
+            self.assertEqual(rule, FaceRule(("Skanos, Dragon Vassal", "Skanos, White Dragon Vassal",
+                                             "Skanos, Blue Dragon Vassal", "Skanos, Black Dragon Vassal",
+                                             "Skanos, Red Dragon Vassal", "Skanos, Green Dragon Vassal"), "specialize"))
+
+    def test_meld_back_uses_related_result_printing(self):
+        result = printing(2, "15b", "Brisela, Voice of Nightmares", "en", set_code="emn", layout="meld")
+        base = printing(1, "15", "Bruna, the Fading Light", "en", set_code="emn", layout="meld",
+                        all_parts=[{"id": result["id"], "component": "meld_result", "name": result["name"]}])
+        edition = Edition.parse("[metadata]\nCode=EMN\n[cards]\n15 R Bruna, the Fading Light\n15b R Brisela, Voice of Nightmares\n")
+        class Rules:
+            def face_rule(self, card):
+                return FaceRule(("Bruna, the Fading Light", "Brisela, Voice of Nightmares"), "meld")
+        assets, _, issues = plan_images("emn", [base, result], edition, ["en"], forge=Rules())
+        self.assertEqual(issues, [])
+        self.assertEqual([(a.stem, source_ids(a)) for a in assets], [
+            ("pics/cards/EMN/Bruna, the Fading Light.full", [base["id"]]),
+            ("pics/cards/EMN/Brisela, Voice of Nightmares.full", [result["id"]]),
+        ])
+
     def test_japanese_planeswalker_occupies_its_own_forge_art(self):
         name = "Liliana, Dreadhorde General"
         edition = Edition.parse(f"""[metadata]
