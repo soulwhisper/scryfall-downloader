@@ -21,7 +21,9 @@ Paths are relative to the data directory (`--data`):
   key, any verified source in that printing's valid set may be reused; a source
   outside the set is replaced. The valid identity set and source-ID validation
   are independent of the current language filter, while downloads still honor
-  the requested languages.
+  the requested languages. Unregistered Token names follow Forge's filename
+  normalization: lowercase, with spaces, hyphens and underscores normalized
+  to `_`. Registered Token slugs from Forge editions are kept verbatim.
 
 Forge edition files supply the short folder code (`Code2`, when defined) and
 art numbering. The downloader resolves editions by `ScryfallCode` and

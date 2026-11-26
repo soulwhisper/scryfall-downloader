@@ -378,6 +378,22 @@ Code=SLD
         self.assertEqual(assets, [])
         self.assertEqual(issues, ["15 Bruna, the Fading Light: special face metadata is incomplete; no independent back-face key"])
 
+    def test_unregistered_token_names_follow_forge_filename_normalization(self):
+        edition = Edition.parse("[metadata]\nCode=UST\nScryfallCode=UST\n")
+        for name, expected in (("Phyrexian Mite", "phyrexian_mite"), ("A-Token", "a_token"),
+                               ("Foo_Bar", "foo_bar"), ("Vél", "vel")):
+            card = printing(1, "1", name, "en", set_code="tust", layout="token", set_type="token")
+            assets, _, issues = plan_images("tust", [card], edition, ["en"])
+            self.assertEqual(issues, [])
+            self.assertEqual([a.stem for a in assets], [f"pics/tokens/TUST/1_{expected}"])
+
+    def test_registered_token_slug_is_not_normalized_again(self):
+        edition = Edition.parse("[metadata]\nCode=ONE\n[tokens]\n11 c_1_1_a_phyrexian_mite\n")
+        card = printing(1, "11", "Phyrexian Mite", "en", set_code="tone", layout="token", set_type="token")
+        assets, _, issues = plan_images("tone", [card], edition, ["en"])
+        self.assertEqual(issues, [])
+        self.assertEqual([a.stem for a in assets], ["pics/tokens/ONE/11_c_1_1_a_phyrexian_mite"])
+
     def test_unregistered_same_name_token_back_reuses_front_key(self):
         edition = Edition.parse("[metadata]\nCode=UST\nScryfallCode=UST\n")
         card = printing(1, "1", "Angel // Angel", "en", set_code="tust", layout="double_faced_token",
@@ -388,7 +404,7 @@ Code=SLD
         assets, _, issues = plan_images("tust", [card], edition, ["en"])
         self.assertEqual(issues, [])
         self.assertEqual([(a.stem, [s.url for s in a.sources]) for a in assets], [
-            ("pics/tokens/TUST/1_Angel", [f"{CDN}/front.jpg"]),
+            ("pics/tokens/TUST/1_angel", [f"{CDN}/front.jpg"]),
         ])
 
     def test_unregistered_different_name_token_back_reports_issue(self):
@@ -400,7 +416,7 @@ Code=SLD
                         ])
         assets, _, issues = plan_images("tust", [card], edition, ["en"])
         self.assertEqual([(a.stem, [s.url for s in a.sources]) for a in assets], [
-            ("pics/tokens/TUST/1_Copy", [f"{CDN}/front.jpg"]),
+            ("pics/tokens/TUST/1_copy", [f"{CDN}/front.jpg"]),
         ])
         self.assertTrue(any("not independently addressable" in issue for issue in issues))
 
@@ -421,7 +437,7 @@ Code=SLD
         assets, _, issues = plan_images("tust", [card], edition, ["en"])
         self.assertTrue(any("not independently addressable" in issue for issue in issues))
         self.assertEqual([(a.stem, [s.url for s in a.sources]) for a in assets], [
-            ("pics/tokens/TUST/1_Copy", [f"{CDN}/front.jpg"]),
+            ("pics/tokens/TUST/1_copy", [f"{CDN}/front.jpg"]),
         ])
 
     def test_shared_token_identity_does_not_change_with_language_filter(self):

@@ -354,9 +354,9 @@ class DownloaderTest(unittest.TestCase):
             alternate = pics / "cards/FT/Oak2.full.png"
             self.assertEqual(primary.read_bytes(), ph)
             self.assertEqual(alternate.read_bytes(), wide_art)
-            self.assertEqual((pics / "tokens/TOK/1_Mite.png").read_bytes(), common)
+            self.assertEqual((pics / "tokens/TOK/1_mite.png").read_bytes(), common)
             self.assertEqual({file.relative_to(pics).as_posix() for file in pics.rglob("*.png")}, {
-                "cards/FT/Oak1.full.png", "cards/FT/Oak2.full.png", "tokens/TOK/1_Mite.png",
+                "cards/FT/Oak1.full.png", "cards/FT/Oak2.full.png", "tokens/TOK/1_mite.png",
                 "cards/YDG/Owl.full.png", "cards/DRF/Pine.full.png",
             })
             self.assertEqual({child.name for child in pics.iterdir()}, {"cards", "tokens"})
@@ -637,7 +637,7 @@ class DownloaderTest(unittest.TestCase):
         with self.server(upstream, "") as port:
             job = self.api(port, "POST", "/jobs", {"sets": ["tst"]}, expect=202)
             self.wait_for(port, f"/jobs/{job['id']}", "completed")
-        self.assertTrue((self.root / "pics/tokens/TST/1_Mite.png").exists())
+        self.assertTrue((self.root / "pics/tokens/TST/1_mite.png").exists())
 
     def test_retry_submits_only_unfinished_sets(self):
         cards = [printing(1, "en", "Oak", "oak.png"), dict(printing(1, "en", "Pine", "pine.png"), set="other")]
