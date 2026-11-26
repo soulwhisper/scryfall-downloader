@@ -62,6 +62,10 @@ def _conflict(fd: int, names: set[str], *allowed: str) -> str | None:
                default=None)
 
 
+def legacy_rename_allowed(asset: Asset, previous: SavedImage | None) -> bool:
+    """Only a known source and a confirmed Forge slot are eligible for migration."""
+    return bool(previous and previous.sha256 and previous.source_id and asset.printing_key and not asset.inferred)
+
 def maintain(root: Path, asset: Asset, previous: SavedImage | None, stop, minimum: str | None,
              webp: bool, *, tidy: bool = False, apply: bool = False, expected: Rename | None = None) -> Inspection:
     """Scan Forge lookup order, or apply one previously approved, unchanged rename."""
