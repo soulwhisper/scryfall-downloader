@@ -17,6 +17,18 @@ LANGUAGE_ALIASES = {
 TERMINAL = frozenset({"completed", "partial", "failed"})
 
 
+def default_languages() -> list[str]:
+    raw = os.environ.get("DOWNLOADER_IMAGE_LANGUAGE")
+    if raw is None:
+        return list(DEFAULT_LANGUAGES)
+    if not raw.strip():
+        return ["en"]
+    normalized = normalize_languages(part for part in raw.split(",") if part.strip())
+    if not LANGUAGE_CODES.issuperset(normalized):
+        raise ValueError("DOWNLOADER_IMAGE_LANGUAGE must contain valid Scryfall language codes")
+    return normalized
+
+
 def default_port() -> int:
     name = "DOWNLOADER_PORT" if "DOWNLOADER_PORT" in os.environ else "DEFAULT_PORT"
     try:

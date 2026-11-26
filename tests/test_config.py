@@ -4,7 +4,8 @@ import unittest
 from unittest.mock import patch
 
 from scryfall_downloader.__main__ import build_parser, env_option
-from scryfall_downloader.protocol import default_port
+from scryfall_downloader.protocol import default_languages, default_port
+from scryfall_downloader.server import policy_from
 
 
 class ConfigTest(unittest.TestCase):
@@ -34,6 +35,20 @@ class ConfigTest(unittest.TestCase):
             self.assertEqual((args.proxy, args.uid, args.gid), (env["DOWNLOADER_PROXY"], 10001, 10001))
             args = build_parser().parse_args(["--bind", "127.0.0.1", "--workers", "2", "--data", "/tmp/other"])
             self.assertEqual((args.bind, args.workers, args.data), ("127.0.0.1", 2, Path("/tmp/other")))
+
+    def test_image_language_defaults_empty_en_and_zht(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(default_languages(), ["zhs", "en"])
+        with patch.dict(os.environ, {"DOWNLOADER_IMAGE_LANGUAGE": ""}, clear=True):
+            self.assertEqual(default_languages(), ["en"])
+            self.assertEqual(policy_from({})["languages"], ["en"])
+        with patch.dict(os.environ, {"DOWNLOADER_IMAGE_LANGUAGE": "zht"}, clear=True):
+            self.assertEqual(default_languages(), ["zht"])
+            self.assertEqual(policy_from({})["languages"], ["zht"])
+            self.assertEqual(policy_from({"languages": ["zhs"]})["languages"], ["zhs"])
+        with patch.dict(os.environ, {"DOWNLOADER_IMAGE_LANGUAGE": "not-a-language"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "DOWNLOADER_IMAGE_LANGUAGE"):
+                default_languages()
 
     def test_one_shot_actions_are_not_implicitly_enabled_by_environment(self):
         with patch.dict(os.environ, {"DOWNLOADER_ARCHIVE_ALL": "1", "DOWNLOADER_REPAIR_OWNERSHIP": "1",

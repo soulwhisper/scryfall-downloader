@@ -33,7 +33,7 @@ take precedence. Paths are resolved by the server process.
 | `DOWNLOADER_DATA` | `--data` | Data and cache directory |
 | `DOWNLOADER_FORGE_EDITIONS` | `--forge-editions` | Mounted Forge edition directory |
 | `DOWNLOADER_WORKERS` | `--workers` | Concurrent image workers |
-| `DOWNLOADER_PROXY` | `--proxy` | Outbound HTTP CONNECT proxy |
+| `DOWNLOADER_IMAGE_LANGUAGE` | Image language preference | Ordered comma-separated Scryfall codes; empty means `en`; default `zhs,en` |
 | `DOWNLOADER_UID`, `DOWNLOADER_GID` | `--uid`, `--gid` | Service/ownership identity |
 | `DOWNLOADER_ENABLE_WEBP` | WebP setting | Opt into WebP images |
 | `DOWNLOADER_HEALTH_UPSTREAM` | Health setting | Include Scryfall in the health probe |
@@ -42,6 +42,11 @@ take precedence. Paths are resolved by the server process.
 `DEFAULT_PORT`, `SCRYFALL_ENABLE_WEBP`, and `SCRYFALL_HEALTH_UPSTREAM` remain
 supported as legacy fallbacks when the corresponding prefixed variable is unset.
 `HTTPS_PROXY`, `NO_PROXY`, and their lowercase forms keep their standard meaning.
+`DOWNLOADER_IMAGE_LANGUAGE` sets the default image-language preference for REST
+jobs, archive jobs, saved sync policy, and the external sync client. It accepts
+ordered comma-separated Scryfall codes; an empty value means `en`, and `zht` is
+valid. The existing `zhs,en` default is unchanged when the variable is unset.
+An explicit `languages` request or `--language` option takes precedence.
 One-shot actions such as `--archive-all`, `--repair-ownership`, and `--dry-run`
 are not enabled by environment variables.
 

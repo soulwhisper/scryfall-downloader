@@ -7,6 +7,7 @@ import http.client
 import json
 import math
 from queue import Empty, SimpleQueue
+import os
 import re
 import shlex
 import sys
@@ -17,7 +18,7 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from .protocol import (
-    API_PREFIX, DEFAULT_LANGUAGES, DEFAULT_PORT, TERMINAL, default_port, downloader_api_token, normalize_languages,
+    API_PREFIX, DEFAULT_PORT, TERMINAL, default_languages, default_port, downloader_api_token, normalize_languages,
 )
 from .set_catalog import expand_sets
 
@@ -138,7 +139,7 @@ def select_sets(args, rows, today):
 def policy_for(args):
     return {
         "operation": "download", "apply": False,
-        "languages": normalize_languages(args.language or DEFAULT_LANGUAGES),
+        "languages": normalize_languages(args.language or default_languages()),
         "min_quality": args.min_quality, "refresh_language": args.refresh_language,
         "refresh_scan": args.refresh_scan,
     }
@@ -195,7 +196,7 @@ def sync(api, args, today):
                 success = False
                 continue
             payload = {"sets": [code], **policy}
-            if not args.language:
+            if not args.language and "DOWNLOADER_IMAGE_LANGUAGE" not in os.environ:
                 del payload["languages"]  # Use the server's default language order.
             api.remaining()
             submitted = True

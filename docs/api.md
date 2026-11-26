@@ -38,7 +38,7 @@ curl -H "Authorization: Bearer $DOWNLOADER_API_TOKEN" "$api/jobs/$job_id"
 | --- | --- |
 | `sets` | 1–10 exact Scryfall set codes, case-insensitive. Request separate token sets such as `tmom` explicitly. |
 | `operation` | `download` (default), `scan` (inspect without image writes), or `tidy` (preview legacy renames). |
-| `languages` | Ordered [Scryfall language codes](https://scryfall.com/docs/api/languages), default `["zhs","en"]`. `zh-CN` and `zh-TW` are aliases for `zhs` and `zht`. Use `["ja"]` for Japanese only or `["ja","en"]` for English fallback. |
+| `languages` | Ordered [Scryfall language codes](https://scryfall.com/docs/api/languages), default `["zhs","en"]`. `zh-CN` and `zh-TW` are aliases for `zhs` and `zht`. Use `["ja"]` for Japanese only or `["ja","en"]` for English fallback. The `DOWNLOADER_IMAGE_LANGUAGE` environment variable supplies the same default when no request field is given; an empty value means `en`. |
 | `min_quality` | `null` (default), `small`, `normal`, `large`, or `png`; see [quality floors](library.md#quality-and-refresh). |
 | `refresh_language`, `refresh_scan` | Download-only booleans, both default `false`; see [refresh rules](library.md#quality-and-refresh). |
 

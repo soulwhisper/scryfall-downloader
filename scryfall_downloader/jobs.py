@@ -13,7 +13,7 @@ from .bulk import BulkCards
 from .diagnostics import Diagnostics
 from .forge import ForgeEditions, plan_images
 from .maintenance import Rename, maintain
-from .protocol import DEFAULT_LANGUAGES, TERMINAL
+from .protocol import TERMINAL, default_languages
 from .set_catalog import SetCatalog
 from .sync_list import SyncList
 from .upstream import Asset, DownloadInterrupted, SavedImage, Scryfall, UpstreamError, Web, check_interrupted, download
@@ -236,7 +236,7 @@ class Jobs:
         ))
 
     def submit_archive(self, key: str | None = None) -> dict:
-        return self.submit([], list(DEFAULT_LANGUAGES), None, key=key, source="archive", archive=True)
+        return self.submit([], default_languages(), None, key=key, source="archive", archive=True)
 
     def _bootstrap_archive(self):
         if not self.db.execute("SELECT 1 FROM archive_bootstrap").fetchone():
@@ -244,7 +244,7 @@ class Jobs:
                 with self.db:
                     self.db.execute("INSERT INTO archive_bootstrap VALUES (1)")
             else:
-                self.submit([], list(DEFAULT_LANGUAGES), None, source="archive_bootstrap", archive=True)
+                self.submit([], default_languages(), None, source="archive_bootstrap", archive=True)
         self.archive_bootstrap_pending = False
 
     def retry(self, job_id: str, key: str | None) -> dict | None:

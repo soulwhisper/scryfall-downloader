@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO, StringIO
 import json
+import os
 from pathlib import Path
 import tempfile
 from threading import Thread
@@ -101,6 +102,22 @@ def run_sync(url, *args):
 
 
 class SyncTest(unittest.TestCase):
+    def test_image_language_environment_is_used_for_sync_requests(self):
+        bodies = []
+
+        def respond(method, path, headers, body):
+            if path == "/api/v1/sets":
+                return 200, {"sets": [set_row("tst")]}, {}
+            if method == "GET":
+                return 200, {"jobs": []}, {}
+            bodies.append(body)
+            return 202, {"id": "job-1", "status": "completed"}, {}
+
+        with local_api(respond) as url, patch.dict(os.environ, {"DOWNLOADER_IMAGE_LANGUAGE": "zht"}):
+            result, _, err = run_sync(url, "tst")
+            self.assertEqual(result, 0, err)
+        self.assertEqual(bodies[0]["languages"], ["zht"])
+
     def test_exact_token_relationship_and_opt_in_release_window(self):
         rows = [set_row("keep", days_ago=20), set_row("weird", "token", parent="keep"),
                 set_row("tkeep", "token", parent="other"), set_row("recent", "core", days_ago=1),
