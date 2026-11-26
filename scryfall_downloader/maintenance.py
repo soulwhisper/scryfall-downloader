@@ -94,8 +94,8 @@ def maintain(root: Path, asset: Asset, previous: SavedImage | None, stop, minimu
     result = Inspection("cached", below_quality=below, legacy=legacy, issue=issue)
     if not tidy or not asset.legacy_border:
         return result
-    if not legacy and not apply:
-        return result
+    if asset.inferred and not legacy_rename_allowed(asset, previous):
+        return replace(result, issue=f"{first.path}: legacy source identity is not verified; file left unchanged")
 
     def blocked(message):
         return replace(result, outcome="failed" if apply else result.outcome, issue=message)
