@@ -7,6 +7,7 @@ import http.client
 import json
 import math
 from queue import Empty, SimpleQueue
+import os
 import re
 import shlex
 import sys
@@ -17,7 +18,7 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from .protocol import (
-    API_PREFIX, DEFAULT_LANGUAGES, DEFAULT_PORT, TERMINAL, default_port, downloader_api_token, normalize_languages,
+    API_PREFIX, DEFAULT_PORT, TERMINAL, default_languages, default_port, downloader_api_token, normalize_languages,
 )
 from .set_catalog import expand_sets
 
@@ -138,7 +139,7 @@ def select_sets(args, rows, today):
 def policy_for(args):
     return {
         "operation": "download", "apply": False,
-        "languages": normalize_languages(args.language or DEFAULT_LANGUAGES),
+        "languages": normalize_languages(args.language or default_languages()),
         "min_quality": args.min_quality, "refresh_language": args.refresh_language,
         "refresh_scan": args.refresh_scan,
     }
@@ -195,7 +196,7 @@ def sync(api, args, today):
                 success = False
                 continue
             payload = {"sets": [code], **policy}
-            if not args.language:
+            if not args.language and "DOWNLOADER_IMAGE_LANGUAGE" not in os.environ:
                 del payload["languages"]  # Use the server's default language order.
             api.remaining()
             submitted = True
@@ -230,7 +231,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sets", metavar="SET", nargs="*")
     parser.add_argument("--api", help=f"downloader base URL, without {API_PREFIX} "
-                        f"(default: loopback on DEFAULT_PORT, or {DEFAULT_PORT} if unset)")
+                        f"(default: loopback on DOWNLOADER_PORT, or {DEFAULT_PORT} if unset)")
     parser.add_argument("--include-tokens", action="store_true", help="also sync token sets whose catalog parent is selected")
     parser.add_argument("--new-releases-days", type=int, metavar="N", help="also sync paper core and expansion sets released in the last N days (UTC)")
     parser.add_argument("--language", action="append", metavar="CODE", help="language in priority order (repeatable; default zhs, en)")

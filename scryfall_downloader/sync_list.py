@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 
-from .protocol import DEFAULT_LANGUAGES, TERMINAL
+from .protocol import TERMINAL, default_languages
 from .set_catalog import expand_sets
 from .upstream import UpstreamError
 
@@ -42,7 +42,7 @@ class SyncList:
                             id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL)""")
             row = jobs.db.execute("SELECT payload FROM sync_list WHERE id = 1").fetchone()
         self.state = json.loads(row[0]) if row else {
-            "config": {"sets": [], "languages": list(DEFAULT_LANGUAGES), "min_quality": None,
+            "config": {"sets": [], "languages": default_languages(), "min_quality": None,
                        "refresh_language": False, "refresh_scan": False, "include_tokens": False,
                        "new_releases_days": None, "interval_hours": None},
             "due": None, "last_run_at": None, "last_job_id": None, "last_error": None,

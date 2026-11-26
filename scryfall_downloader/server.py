@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from .imagefiles import QUALITY
 from .jobs import JobConflict, Jobs, QueueFull
-from .protocol import API_PREFIX, DEFAULT_LANGUAGES, LANGUAGE_CODES, SET_CODE, normalize_languages
+from .protocol import API_PREFIX, LANGUAGE_CODES, SET_CODE, default_languages, normalize_languages
 from .sync_list import SyncConflict, SyncUnavailable
 from .upstream import UpstreamError
 
@@ -38,7 +38,7 @@ def codes_from(body, minimum, maximum):
 
 
 def policy_from(body):
-    languages = body.get("languages", list(DEFAULT_LANGUAGES))
+    languages = body.get("languages", default_languages())
     if (not isinstance(languages, list) or not 1 <= len(languages) <= len(LANGUAGE_CODES)
             or not all(isinstance(lang, str) for lang in languages)):
         raise ValueError("languages must be a nonempty list of Scryfall language codes")
