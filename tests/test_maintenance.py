@@ -6,10 +6,11 @@ import struct
 import tempfile
 from threading import Event
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 import zlib
 
-from scryfall_downloader.maintenance import maintain
+from scryfall_downloader.maintenance import legacy_rename_allowed, maintain
 from scryfall_downloader.upstream import Asset, DownloadInterrupted, SavedImage, Source
 
 
@@ -110,6 +111,16 @@ class MaintenanceTest(unittest.TestCase):
         self.assertEqual(result.outcome, "failed")
         self.assertEqual(self.legacy.read_bytes(), changed)
         self.assertFalse(self.canonical.exists())
+
+    def test_only_proven_legacy_sources_are_migration_candidates(self):
+        asset = Asset("pics/cards/FT/Oak.full", (), legacy_border=True,
+                      printing_key='["ft","1","Oak",0]', inferred=False)
+        self.assertFalse(legacy_rename_allowed(asset, None))
+        previous = SavedImage("https://cards.scryfall.io/large/oak.jpg", ".jpg", 10, "a" * 64,
+                              "en", source_id="00000000-0000-0000-0000-000000000001",
+                              printing_key=asset.printing_key)
+        self.assertTrue(legacy_rename_allowed(asset, previous))
+        self.assertFalse(legacy_rename_allowed(replace(asset, inferred=True), previous))
 
     def test_tidy_rejects_exact_and_ambiguous_names(self):
         self.legacy.write_bytes(self.image)
