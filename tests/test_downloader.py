@@ -577,6 +577,18 @@ class DownloaderTest(unittest.TestCase):
         self.assertTrue((folder / (extra + ".fullborder.png")).exists())
         self.assertTrue((folder / (before[-1] + ".full.png")).exists())
 
+    def test_unknown_inferred_legacy_art_is_not_migrated_or_overwritten(self):
+        image = self.root / "pics" / "cards" / "TST" / "Forest.full.png"
+        image.parent.mkdir(parents=True)
+        image.write_bytes(pixel_png(91))
+        upstream = Upstream([printing(1, "en", "Forest", "forest.png")], {"forest.png": pixel_png(90)})
+        with self.server(upstream, "") as port:
+            preview = self.api(port, "POST", "/jobs", {"sets": ["tst"], "operation": "tidy"}, expect=202)
+            progress = self.wait_for(port, f"/jobs/{preview['id']}", "partial")["sets"]["tst"]
+            self.assertEqual(progress["renames"], 0)
+            self.assertTrue(any("left unchanged" in issue for issue in progress["issues"]))
+            self.assertEqual(image.read_bytes(), pixel_png(91))
+
     def test_saved_sync_list_and_overdue_schedule_survive_restart(self):
         cards = [printing(1, "en", "Oak", "oak.png"),
                  dict(printing(1, "en", "Goblin", "token.png"), set="tsub", set_type="token")]
