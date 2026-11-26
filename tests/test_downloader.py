@@ -589,6 +589,27 @@ class DownloaderTest(unittest.TestCase):
             self.assertTrue(any("left unchanged" in issue for issue in progress["issues"]))
             self.assertEqual(image.read_bytes(), pixel_png(91))
 
+    def test_approved_legacy_rename_is_idempotent_after_restart(self):
+        card = pixel_png(90)
+        upstream = Upstream([printing(1, "en", "Oak", "oak.png")], {"oak.png": card})
+        folder = self.root / "pics" / "cards" / "FT"
+        folder.mkdir(parents=True)
+        legacy = folder / "Oak.fullborder.png"
+        canonical = folder / "Oak.full.png"
+        legacy.write_bytes(card)
+        with self.server(upstream, "1 C Oak\n") as port:
+            preview = self.api(port, "POST", "/jobs", {"sets": ["tst"], "operation": "tidy"}, expect=202)
+            path = f"/jobs/{preview['id']}"
+            self.wait_for(port, path, "completed")
+            applied = self.api(port, "POST", path + "/apply", {}, expect=202)
+            self.wait_for(port, f"/jobs/{applied['id']}", "completed")
+            self.assertTrue(canonical.exists())
+        with self.server(upstream, "1 C Oak\n") as port:
+            job = self.api(port, "POST", "/jobs", {"sets": ["tst"], "operation": "tidy"}, expect=202)
+            self.wait_for(port, f"/jobs/{job['id']}", "completed")
+            self.assertEqual(canonical.read_bytes(), card)
+            self.assertFalse(legacy.exists())
+
     def test_saved_sync_list_and_overdue_schedule_survive_restart(self):
         cards = [printing(1, "en", "Oak", "oak.png"),
                  dict(printing(1, "en", "Goblin", "token.png"), set="tsub", set_type="token")]

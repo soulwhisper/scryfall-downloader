@@ -164,8 +164,10 @@ destination. A legacy source is eligible only when its Forge slot and source
 identity are known; unverified inferred images remain untouched. Inferred
 legacy art slots are checked against this rule before any migration plan or
 apply proceeds. Unknown inferred files do not produce renames and are never
-overwritten. It preserves bytes and ownership, never overwrites a destination,
-and reports conflicts rather than renaming over them. Preview again if the approved files have changed. Tidy requires POSIX directory operations and
+overwritten. Replaying an already completed migration after restart is safe:
+an existing target is reused without requiring a new approval record. It preserves
+bytes and ownership, never overwrites a destination, and reports conflicts
+rather than renaming over them. Preview again if the approved files have changed. Tidy requires POSIX directory operations and
 hard links. Stop other writers to the picture folders before applying.
 
 References: [Scryfall image formats](https://scryfall.com/docs/api/images),

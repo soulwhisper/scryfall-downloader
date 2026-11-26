@@ -108,10 +108,11 @@ def maintain(root: Path, asset: Asset, previous: SavedImage | None, stop, minimu
 
     stem = root / asset.stem
     source = first.path
-    target = stem.with_name(stem.name + first.saved.suffix)
+    target_suffix = first.saved.suffix if first.saved is not None else Path(first.path).suffix
+    target = stem.with_name(stem.name + target_suffix)
     legacy_stem = stem.name.removesuffix(".full") + ".fullborder"
-    proposed = Rename((stem.parent / (legacy_stem + first.saved.suffix)).relative_to(root).as_posix(),
-                      target.relative_to(root).as_posix(), first.saved.sha256)
+    proposed = Rename((stem.parent / (legacy_stem + target_suffix)).relative_to(root).as_posix(),
+                      target.relative_to(root).as_posix(), first.saved.sha256 if first.saved else None)
     if apply and proposed != expected:
         return blocked(f"{source}: file no longer matches the approved rename; preview again")
     names = {(base + suffix).casefold() for base in (stem.name, legacy_stem) for suffix in IMAGE_SUFFIXES}
@@ -125,7 +126,7 @@ def maintain(root: Path, asset: Asset, previous: SavedImage | None, stop, minimu
         check_interrupted(stop)
         if not legacy:
             # A restart after a successful rename may replay the already present target.
-            saved = previous if previous and previous.sha256 == expected.sha256 else first.saved
+            saved = previous if previous and expected is not None and previous.sha256 == expected.sha256 else first.saved
             return replace(result, saved=replace(saved, file_name=None), issue=None)
         if not apply:
             return replace(result, issue=f"{source}: would rename to {target}", rename=proposed)
