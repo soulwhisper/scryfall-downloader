@@ -230,7 +230,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sets", metavar="SET", nargs="*")
     parser.add_argument("--api", help=f"downloader base URL, without {API_PREFIX} "
-                        f"(default: loopback on DEFAULT_PORT, or {DEFAULT_PORT} if unset)")
+                        f"(default: loopback on DOWNLOADER_PORT, or {DEFAULT_PORT} if unset)")
     parser.add_argument("--include-tokens", action="store_true", help="also sync token sets whose catalog parent is selected")
     parser.add_argument("--new-releases-days", type=int, metavar="N", help="also sync paper core and expansion sets released in the last N days (UTC)")
     parser.add_argument("--language", action="append", metavar="CODE", help="language in priority order (repeatable; default zhs, en)")

@@ -13,9 +13,9 @@ from .upstream import NETWORK_ERRORS, UpstreamError, Web
 def main() -> int:
     try:
         port = default_port()
-        upstream = os.environ.get("SCRYFALL_HEALTH_UPSTREAM", "0")
+        upstream = os.environ.get("DOWNLOADER_HEALTH_UPSTREAM", os.environ.get("SCRYFALL_HEALTH_UPSTREAM", "0"))
         if upstream not in ("0", "1"):
-            raise ValueError("SCRYFALL_HEALTH_UPSTREAM must be 0 or 1")
+            raise ValueError("DOWNLOADER_HEALTH_UPSTREAM must be 0 or 1")
     except ValueError as exc:
         print(exc, file=sys.stderr)
         return 1

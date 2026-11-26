@@ -18,12 +18,13 @@ TERMINAL = frozenset({"completed", "partial", "failed"})
 
 
 def default_port() -> int:
+    name = "DOWNLOADER_PORT" if "DOWNLOADER_PORT" in os.environ else "DEFAULT_PORT"
     try:
-        port = int(os.environ.get("DEFAULT_PORT", DEFAULT_PORT))
+        port = int(os.environ.get(name, DEFAULT_PORT))
     except ValueError:
         port = 0
     if not 1 <= port <= 65535:
-        raise ValueError("DEFAULT_PORT must be an integer between 1 and 65535")
+        raise ValueError(f"{name} must be an integer between 1 and 65535")
     return port
 
 

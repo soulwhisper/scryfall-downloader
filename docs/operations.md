@@ -21,6 +21,30 @@ Open `/` on the downloader's origin. The console uses JavaScript; the
   CDN** runs the [upstream probe](api.md#health-and-diagnostics). Change proxy,
   UID/GID, WebP, and ownership settings on the host, not in the console.
 
+## Service environment variables
+
+Service configuration accepts these `DOWNLOADER_` variables; command-line flags
+take precedence. Paths are resolved by the server process.
+
+| Environment | Equivalent option | Purpose |
+| --- | --- | --- |
+| `DOWNLOADER_BIND` | `--bind` | HTTP listen address |
+| `DOWNLOADER_PORT` | `--port` | Listening port |
+| `DOWNLOADER_DATA` | `--data` | Data and cache directory |
+| `DOWNLOADER_FORGE_EDITIONS` | `--forge-editions` | Mounted Forge edition directory |
+| `DOWNLOADER_WORKERS` | `--workers` | Concurrent image workers |
+| `DOWNLOADER_PROXY` | `--proxy` | Outbound HTTP CONNECT proxy |
+| `DOWNLOADER_UID`, `DOWNLOADER_GID` | `--uid`, `--gid` | Service/ownership identity |
+| `DOWNLOADER_ENABLE_WEBP` | WebP setting | Opt into WebP images |
+| `DOWNLOADER_HEALTH_UPSTREAM` | Health setting | Include Scryfall in the health probe |
+| `DOWNLOADER_API_TOKEN` | API authentication | Bearer token for API and console |
+
+`DEFAULT_PORT`, `SCRYFALL_ENABLE_WEBP`, and `SCRYFALL_HEALTH_UPSTREAM` remain
+supported as legacy fallbacks when the corresponding prefixed variable is unset.
+`HTTPS_PROXY`, `NO_PROXY`, and their lowercase forms keep their standard meaning.
+One-shot actions such as `--archive-all`, `--repair-ownership`, and `--dry-run`
+are not enabled by environment variables.
+
 ## First-start archive
 
 Use `--archive-all` to queue the [full catalogue sync](library.md#full-catalogue-sync)
@@ -87,18 +111,19 @@ docker exec scryfall-downloader python -m scryfall_downloader.sync --include-tok
 
 ## Listening port
 
-Set `DEFAULT_PORT` to an integer from `1` to `65535`. If unset, the server
-listens on `8765`. On a native launch, `--port` overrides the environment:
+Set `DOWNLOADER_PORT` to an integer from `1` to `65535`. If unset, the server
+listens on `8765`. On a native launch, `--port` overrides the environment. The
+legacy `DEFAULT_PORT` remains supported when `DOWNLOADER_PORT` is unset.
 
 ```sh
-DEFAULT_PORT=18765 python3 -m scryfall_downloader
+DOWNLOADER_PORT=18765 python3 -m scryfall_downloader
 ```
 
-In a container, pass `-e DEFAULT_PORT=18765` and publish the matching internal
+In a container, pass `-e DOWNLOADER_PORT=18765` and publish the matching internal
 port with `-p 127.0.0.1:18765:18765`. Use the environment variable rather than
 `--port` so the bundled health check and `docker exec` sync client use the same
 port. Image metadata still exposes `8765`, so publish the custom port explicitly.
-To change only the host-side port, leave `DEFAULT_PORT` unset and use
+To change only the host-side port, leave `DOWNLOADER_PORT` unset and use
 `-p 127.0.0.1:18765:8765`.
 
 ## Network and proxies
@@ -145,11 +170,11 @@ podman run --rm --name scryfall-downloader --stop-timeout 30 \
 ```
 
 Pass lowercase names with `-e https_proxy -e no_proxy` if needed. To opt into
-[WebP](library.md#webp-opt-in) or authentication, pass `-e SCRYFALL_ENABLE_WEBP`
+[WebP](library.md#webp-opt-in) or authentication, pass `-e DOWNLOADER_ENABLE_WEBP`
 or `-e DOWNLOADER_API_TOKEN`. Preserve the writable `/data` mount across
 replacements so the service can resume jobs. The bundled health check uses
 `/api/v1/health` on the [configured internal port](#listening-port). Set
-`SCRYFALL_HEALTH_UPSTREAM=1` to probe Scryfall's bulk metadata API as well,
+`DOWNLOADER_HEALTH_UPSTREAM=1` to probe Scryfall's bulk metadata API as well,
 using `HTTPS_PROXY`/`NO_PROXY` from the container environment. Do not
 restart the service merely because the independent upstream check fails.
 
